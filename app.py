@@ -86,7 +86,7 @@ with tab1:
             except Exception as e:
                 st.error(f"Error: {e}")
 
-# --- FASE 2: GENERADOR DE FICHERO PRESTASHOP ---
+# --- FASE 2: GENERADOR DE FICHERO PRESTASHOP (CORREGIDO) ---
 with tab2:
     st.header("2. Constructor de Carga Final")
     st.write("Sube los resultados de Keepa e imágenes para generar el CSV de subida.")
@@ -102,7 +102,7 @@ with tab2:
     if all([f_lista, f_keepa, f_img, f_cats]):
         if st.button("🪄 Generar CSV PrestaShop"):
             try:
-                # Carga de datos
+                # 1. Carga y limpieza inicial
                 df_l = pd.read_excel(f_lista, dtype=str)
                 df_k = pd.read_excel(f_keepa, dtype=str)
                 df_i = pd.read_csv(f_img, dtype=str)
@@ -111,57 +111,70 @@ with tab2:
                 for d in [df_l, df_k, df_i, df_c]:
                     d.columns = d.columns.str.lower().str.strip()
 
-                # Identificación de columnas
+                # 2. Identificación robusta de columnas
                 c_asin_k = buscar_columna(df_k, ['asin'])
-                c_ean_k = buscar_columna(df_k, ['ean'])
-                c_tit_k = buscar_columna(df_k, ['título', 'title'])
-                c_cat_k = buscar_columna(df_k, ['categorías: subcategoría'])
-                c_cat_amz = buscar_columna(df_c, ['amazon', 'origen'])
-                c_cat_ps = buscar_columna(df_c, ['prestashop', 'destino'])
+                c_ean_k = buscar_columna(df_k, ['ean', 'código'])
+                c_tit_k = buscar_columna(df_k, ['título', 'title', 'nombre'])
+                c_cat_k = buscar_columna(df_k, ['categoría', 'category'])
                 
-                # Cruce Lista + Keepa
+                # Validación crítica: si c_asin_k es None, lanzamos error específico
+                if not c_asin_k:
+                    st.error("❌ No se encontró la columna 'ASIN' en el archivo de Keepa.")
+                    st.stop()
+
+                # 3. Cruce Lista + Keepa
                 c_asin_l = 'asin1' if 'asin1' in df_l.columns else 'asin'
                 df_m = pd.merge(df_l, df_k, left_on=c_asin_l, right_on=c_asin_k, how='inner')
 
-                # Dataset Final
+                if df_m.empty:
+                    st.warning("⚠️ No hay coincidencias entre la Lista y Keepa. Revisa los ASINs.")
+                    st.stop()
+
+                # 4. Construcción del resultado
                 res = pd.DataFrame()
                 res['Product ID'] = range(900001, 900001 + len(df_m))
                 res['Active (0/1)'] = "1"
                 res['Reference #'] = df_m['seller-sku']
-                res['Name *'] = df_m[c_tit_k].str.slice(0, 128)
+                res['Name *'] = df_m[c_tit_k].str.slice(0, 128) if c_tit_k else "Producto sin nombre"
                 res['EAN13'] = df_m[c_ean_k] if c_ean_k else ""
                 res['Price tax included'] = "999"
                 res['Supplier'] = 'Cecotec'
                 res['Manufacturer'] = 'Cecotec'
 
-                # Descripción (Características)
+                # Descripción dinámica basada en columnas que contengan 'característica'
                 cols_car = [c for c in df_m.columns if 'característica' in str(c)]
-                res['Description'] = df_m[cols_car].fillna('').agg(' '.join, axis=1).str.slice(0, 2000)
+                if cols_car:
+                    res['Description'] = df_m[cols_car].fillna('').agg(' '.join, axis=1).str.slice(0, 2000)
+                else:
+                    res['Description'] = "Sin descripción disponible"
 
-                # Categorías con Mapeo
-                mapeo = pd.Series(df_c[c_cat_ps].values, index=df_c[c_cat_amz].str.lower().str.strip()).to_dict()
-                res['Categories (x,y,z...)'] = df_m[c_cat_k].apply(lambda x: mapeo.get(str(x).lower().strip(), x))
+                # 5. Imágenes
+                # Evitar error si no existe columna 'reference' en imágenes
+                col_ref_img = buscar_columna(df_i, ['reference', 'sku', 'referencia'])
+                if col_ref_img:
+                    df_i['urls'] = df_i.drop(columns=[col_ref_img], errors='ignore').fillna('').apply(
+                        lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
+                    
+                    df_i_clean = df_i[[col_ref_img, 'urls']].drop_duplicates(col_ref_img)
+                    res = pd.merge(res, df_i_clean, left_on='Reference #', right_on=col_ref_img, how='left')
+                    res.rename(columns={'urls': 'Image URLs (x,y,z...)'}, inplace=True)
+                else:
+                    res['Image URLs (x,y,z...)'] = ""
 
-                # Imágenes (Unión de URLs)
-                df_i['urls'] = df_i.drop(columns=['reference'], errors='ignore').fillna('').apply(
-                    lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
-                res = pd.merge(res, df_i[['reference', 'urls']].drop_duplicates('reference'), 
-                               left_on='Reference #', right_on='reference', how='left')
-
-                res.rename(columns={'urls': 'Image URLs (x,y,z...)'}, inplace=True)
+                # 6. Campos fijos y exportación
                 res['Text when in stock'] = 'In Stock'
                 res['Available for order (0 = No, 1 = Yes)'] = "1"
                 res['Show price (0 = No, 1 = Yes)'] = "1"
 
-                cols_f = ['Product ID', 'Active (0/1)', 'Name *', 'Categories (x,y,z...)', 'Price tax included', 
-                          'Reference #', 'EAN13', 'Description', 'Image URLs (x,y,z...)', 'Supplier', 'Manufacturer', 
-                          'Text when in stock', 'Available for order (0 = No, 1 = Yes)', 'Show price (0 = No, 1 = Yes)']
+                cols_f = ['Product ID', 'Active (0/1)', 'Name *', 'Price tax included', 
+                          'Reference #', 'EAN13', 'Description', 'Image URLs (x,y,z...)']
 
                 csv_res = io.StringIO()
                 res[cols_f].to_csv(csv_res, index=False, sep=',', encoding='utf-8-sig')
                 
-                st.success("✅ Fichero final generado.")
+                st.success(f"✅ Fichero generado con {len(res)} productos.")
                 st.download_button("⬇️ Descargar CSV PrestaShop", csv_res.getvalue(), "subida_final.csv", "text/csv")
+                st.dataframe(res.head())
 
             except Exception as e:
-                st.error(f"Error en Fase 2: {e}")
+                st.error(f"❌ Error en Fase 2: {str(e)}")
