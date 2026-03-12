@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import io
-import re
 from datetime import datetime
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -21,29 +20,19 @@ def buscar_columna(df, palabras_clave):
 def truncar_texto(texto, limite):
     """Corta el texto en el último espacio o punto sin exceder el límite."""
     texto = str(texto).strip()
-    if len(texto) <= limite:
-        return texto
-    
-    # Tomamos el bloque hasta el límite
+    if len(texto) <= limite: return texto
     recorte = texto[:limite]
-    
-    # Buscamos la posición del último punto o espacio
     ultimo_punto = recorte.rfind('.')
     ultimo_espacio = recorte.rfind(' ')
-    
-    # Elegimos el punto de corte más lejano (pero dentro del límite)
     punto_corte = max(ultimo_punto, ultimo_espacio)
-    
-    if punto_corte == -1:
-        return recorte # Si no hay espacios ni puntos, cortamos a machete
-    
+    if punto_corte == -1: return recorte
     return recorte[:punto_corte].strip()
 
-# Persistencia de datos
+# Persistencia de datos entre pestañas
 if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
 if 'df_previa' not in st.session_state: st.session_state.df_previa = None
 
-st.title("🐦 Turaco PrestaShop Assistant")
+st.title("🐦 Turaco PrestaShop Assistant - Generador Completo")
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar y Auditar", "📦 FASE 2: Generar Carga Final"])
 
 # --- FASE 1: IDENTIFICACIÓN ---
@@ -97,7 +86,7 @@ with tab1:
 
 # --- FASE 2: GENERADOR ---
 with tab2:
-    st.header("Generador de Carga PrestaShop")
+    st.header("Generador de Fichero CSV Completo")
     if st.session_state.df_revisado is None:
         st.info("⚠️ Debes confirmar la selección en la Fase 1.")
     else:
@@ -130,40 +119,53 @@ with tab2:
                     subcats_keepa = df_m[c_cat_sub].unique()
                     subcats_mapeadas = df_c[c_map_amz].str.lower().str.strip().unique()
                     faltantes = [str(cat) for cat in subcats_keepa if str(cat).lower().strip() not in subcats_mapeadas]
-                    
-                    if faltantes:
-                        st.error("⚠️ Faltan subcategorías en el mapeo:")
-                        st.write(faltantes)
-                        st.stop()
+                    if faltantes: st.error(f"⚠️ Faltan subcategorías en el mapeo: {faltantes}"); st.stop()
 
-                    # --- CONSTRUCCIÓN ---
+                    # --- CONSTRUCCIÓN DEL DATASET CON TODAS LAS COLUMNAS ---
                     final = pd.DataFrame()
                     final['Product ID'] = range(900001, 900001 + len(df_m))
                     final['Active (0/1)'] = "1"
-                    
-                    # Nombre con recorte inteligente (128 caracteres)
                     final['Name *'] = df_m[c_tit_k].apply(lambda x: truncar_texto(x, 128))
                     
-                    mapeo = pd.Series(df_c[c_map_ps].values, index=df_c[c_map_amz].str.lower().str.strip()).to_dict()
+                    mapeo = pd.Series(df_c[c_cat_ps].values, index=df_c[c_map_amz].str.lower().str.strip()).to_dict()
                     final['Categories (x,y,z...)'] = df_m[c_cat_sub].apply(lambda x: mapeo.get(str(x).lower().strip(), x))
                     
                     final['Price tax included'] = "999"
                     final['Tax rules ID'] = "1"
+                    
+                    # Columnas adicionales solicitadas
+                    final['Wholesale price'] = ""
+                    final['On sale (0/1)'] = "0"
+                    for col in ['Discount amount', 'Discount percent', 'Discount from (yyyy-mm-dd)', 'Discount to (yyyy-mm-dd)']:
+                        final[col] = ""
+
                     final['Reference #'] = df_m['seller-sku']
                     final['Supplier reference #'] = df_m['seller-sku']
                     final['Supplier'] = "Cecotec"
                     final['Manufacturer'] = "Cecotec"
                     final['EAN13'] = df_m[buscar_columna(df_k, ['ean'])] if buscar_columna(df_k, ['ean']) else ""
                     
-                    # Descripción con recorte inteligente (2000 caracteres)
+                    # Medidas y Stock
+                    for col, val in zip(['UPC', 'Ecotax', 'Width', 'Height', 'Depth', 'Weight', 'Quantity'], ["", "", "1", "1", "1", "1", "0"]):
+                        final[col] = val
+                    
+                    # Otros campos solicitados
+                    for col in ['Minimal quantity', 'Low stock level', 'Visibility', 'Additional shipping cost', 'Unity', 'Unit price', 'Short description']:
+                        final[col] = ""
+
                     cols_car = [c for c in df_m.columns if 'característica' in str(c)]
                     raw_desc = df_m[cols_car].fillna('').agg(' '.join, axis=1)
                     final['Description'] = raw_desc.apply(lambda x: truncar_texto(x, 2000))
 
-                    # Campos fijos
-                    for col, val in zip(['Width', 'Height', 'Depth', 'Weight', 'Quantity', 'Condition', 'Show price (0 = No, 1 = Yes)'], 
-                                        ["1", "1", "1", "1", "0", "new", "1"]):
-                        final[col] = val
+                    for col in ['Tags (x,y,z...)', 'Meta title', 'Meta keywords', 'Meta description', 'URL rewritten']:
+                        final[col] = ""
+
+                    final['Text when in stock'] = "In Stock"
+                    final['Text when backorder allowed'] = ""
+                    final['Available for order (0 = No, 1 = Yes)'] = "1"
+                    final['Product available date'] = ""
+                    final['Product creation date'] = ""
+                    final['Show price (0 = No, 1 = Yes)'] = "1"
 
                     # Imágenes
                     c_ref_i = buscar_columna(df_i, ['reference', 'sku'])
@@ -171,18 +173,22 @@ with tab2:
                     final = pd.merge(final, df_i[[c_ref_i, 'urls']].drop_duplicates(c_ref_i), left_on='Reference #', right_on=c_ref_i, how='left')
                     final.rename(columns={'urls': 'Image URLs (x,y,z...)'}, inplace=True)
                     
-                    # Campos adicionales de la tabla solicitada
-                    for col in ['Out of stock', 'ID / Name of shop', 'Advanced stock management', 'Depends On Stock', 'Warehouse']:
-                        final[col] = "0"
+                    # Columnas finales solicitadas
+                    final['Image alt texts (x,y,z...)'] = ""
+                    final['Delete existing images (0 = No, 1 = Yes)'] = "0"
+                    final['Feature(Name:Value:Position)'] = ""
                     final['Available online only (0 = No, 1 = Yes)'] = "1"
+                    final['Condition'] = "new"
+                    
+                    for col in ['Customizable (0 = No, 1 = Yes)', 'Uploadable files (0 = No, 1 = Yes)', 'Text fields (0 = No, 1 = Yes)', 'Out of stock', 'ID / Name of shop', 'Advanced stock management', 'Depends On Stock', 'Warehouse']:
+                        final[col] = "0"
 
-                    # Exportación con nombre de fecha
+                    # Exportación Final
                     fecha_str = datetime.now().strftime("%Y%m%d")
                     nombre_fichero = f"{fecha_str}_Novedades.csv"
-                    
                     csv_buf = io.BytesIO()
-                    final.to_csv(csv_buf, index=False, sep=',', encoding='utf-8-sig') # BOM para Excel
+                    final.to_csv(csv_buf, index=False, sep=',', encoding='utf-8-sig')
                     
-                    st.success(f"✅ ¡ÉXITO! Fichero '{nombre_fichero}' generado.")
+                    st.success(f"✅ Fichero '{nombre_fichero}' generado con éxito.")
                     st.download_button("⬇️ Descargar CSV PrestaShop", csv_buf.getvalue(), nombre_fichero, "text/csv")
                 except Exception as e: st.error(f"Error: {e}")
