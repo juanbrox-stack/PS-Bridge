@@ -11,7 +11,7 @@ def normalizar_sku(serie):
     return serie.astype(str).str.strip().str.upper().str.lstrip('0')
 
 def buscar_columna(df, palabras_clave):
-    """Busca una columna de forma flexible por palabras clave."""
+    """Busca una columna de forma flexible."""
     for col in df.columns:
         if any(palabra in str(col).lower() for palabra in palabras_clave):
             return col
@@ -32,16 +32,16 @@ def truncar_texto(texto, limite):
 if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
 if 'df_previa' not in st.session_state: st.session_state.df_previa = None
 
-st.title("🐦 Turaco PrestaShop Assistant - Generador 64 Columnas")
+st.title("🐦 Turaco PrestaShop Assistant - Versión Final Corregida")
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar y Auditar", "📦 FASE 2: Generar Carga Final"])
 
 # --- FASE 1: IDENTIFICACIÓN ---
 with tab1:
     st.header("Auditoría de Novedades")
     c1, c2, c3 = st.columns(3)
-    with c1: f_ps = st.file_uploader("BBDD PrestaShop", type=['csv', 'xlsx'], key="ps_vfinal")
-    with c2: f_amz = st.file_uploader("Listing Amazon", type=['txt', 'xlsx'], key="amz_vfinal")
-    with c3: f_plan = st.file_uploader("Plan Lanzamiento", type=['xlsx'], key="plan_vfinal")
+    with c1: f_ps = st.file_uploader("BBDD PrestaShop", type=['csv', 'xlsx'], key="ps_up")
+    with c2: f_amz = st.file_uploader("Listing Amazon", type=['txt', 'xlsx'], key="amz_up")
+    with c3: f_plan = st.file_uploader("Plan Lanzamiento", type=['xlsx'], key="plan_up")
 
     if all([f_ps, f_amz, f_plan]):
         if st.button("🚀 Cruce de Novedades"):
@@ -106,25 +106,24 @@ with tab2:
 
                     for d in [df_k, df_i, df_c]: d.columns = d.columns.str.lower().str.strip()
 
-                    # Definición de columnas de mapeo
                     c_asin_k = buscar_columna(df_k, ['asin'])
                     c_tit_k = buscar_columna(df_k, ['título', 'title']) 
                     c_cat_sub = buscar_columna(df_k, ['subcategoría']) 
-                    c_cat_amz = buscar_columna(df_c, ['amazon', 'origen'])
-                    c_cat_ps = buscar_columna(df_c, ['prestashop', 'destino'])
+                    c_map_amz = buscar_columna(df_c, ['amazon', 'origen'])
+                    c_map_ps = buscar_columna(df_c, ['prestashop', 'destino'])
                     c_asin_l = buscar_columna(df_l, ['asin'])
                     
-                    if not all([c_asin_k, c_cat_amz, c_cat_ps]):
-                        st.error("Faltan columnas críticas en los archivos de Keepa o Mapeo.")
+                    if not all([c_asin_k, c_map_amz, c_map_ps]):
+                        st.error("Faltan columnas críticas en los archivos.")
                         st.stop()
 
                     df_m = pd.merge(df_l, df_k, left_on=c_asin_l, right_on=c_asin_k, how='inner')
 
                     # Validación Categorías
                     subcats_keepa = df_m[c_cat_sub].unique()
-                    subcats_mapeadas = df_c[c_cat_amz].str.lower().str.strip().unique()
+                    subcats_mapeadas = df_c[c_map_amz].str.lower().str.strip().unique()
                     faltantes = [str(cat) for cat in subcats_keepa if str(cat).lower().strip() not in subcats_mapeadas]
-                    if faltantes: st.error(f"Faltan subcategorías en mapeo: {faltantes}"); st.stop()
+                    if faltantes: st.error(f"Faltan subcategorías: {faltantes}"); st.stop()
 
                     # --- CONSTRUCCIÓN DEL CSV FINAL ---
                     final = pd.DataFrame()
@@ -132,7 +131,7 @@ with tab2:
                     final['Active (0/1)'] = "1"
                     final['Name *'] = df_m[c_tit_k].apply(lambda x: truncar_texto(x, 128))
                     
-                    mapeo_dict = pd.Series(df_c[c_cat_ps].values, index=df_c[c_cat_amz].str.lower().str.strip()).to_dict()
+                    mapeo_dict = pd.Series(df_c[c_map_ps].values, index=df_c[c_map_amz].str.lower().str.strip()).to_dict()
                     final['Categories (x,y,z...)'] = df_m[c_cat_sub].apply(lambda x: mapeo_dict.get(str(x).lower().strip(), x))
                     
                     final['Price tax included'] = "999"
@@ -168,6 +167,32 @@ with tab2:
                     final['Product creation date'] = ""
                     final['Show price (0 = No, 1 = Yes)'] = "1"
 
-                    # Imágenes
+                    # Imágenes - Lógica Corregida
                     c_ref_i = buscar_columna(df_i, ['reference', 'sku'])
-                    df_i['urls'] = df_i.drop(columns=[c_ref
+                    if c_ref_i:
+                        df_i['urls'] = df_i.drop(columns=[c_ref_i], errors='ignore').fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
+                        df_i_clean = df_i[[c_ref_i, 'urls']].drop_duplicates(c_ref_i)
+                        final = pd.merge(final, df_i_clean, left_on='Reference #', right_on=c_ref_i, how='left')
+                        final.rename(columns={'urls': 'Image URLs (x,y,z...)'}, inplace=True)
+                    else:
+                        final['Image URLs (x,y,z...)'] = ""
+
+                    # Columnas finales solicitadas
+                    final['Image alt texts (x,y,z...)'] = ""
+                    final['Delete existing images (0 = No, 1 = Yes)'] = "0"
+                    final['Feature(Name:Value:Position)'] = ""
+                    final['Available online only (0 = No, 1 = Yes)'] = "1"
+                    final['Condition'] = "new"
+                    
+                    for col in ['Customizable (0 = No, 1 = Yes)', 'Uploadable files (0 = No, 1 = Yes)', 'Text fields (0 = No, 1 = Yes)', 'Out of stock', 'ID / Name of shop', 'Advanced stock management', 'Depends On Stock', 'Warehouse']:
+                        final[col] = "0"
+
+                    # Exportación Final
+                    fecha_str = datetime.now().strftime("%Y%m%d")
+                    nombre_fichero = f"{fecha_str}_Novedades.csv"
+                    csv_buf = io.BytesIO()
+                    final.to_csv(csv_buf, index=False, sep=',', encoding='utf-8-sig')
+                    
+                    st.success(f"✅ Fichero '{nombre_fichero}' generado con éxito.")
+                    st.download_button("⬇️ Descargar CSV PrestaShop", csv_buf.getvalue(), nombre_fichero, "text/csv")
+                except Exception as e: st.error(f"Error en Fase 2: {e}")
