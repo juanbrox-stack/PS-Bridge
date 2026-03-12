@@ -4,14 +4,14 @@ import io
 from datetime import datetime
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Turaco PS Helper PRO", page_icon="🐦", layout="wide")
+st.set_page_config(page_title="Turaco PS Assistant PRO", page_icon="🐦", layout="wide")
 
 def normalizar_sku(serie):
-    """Limpia espacios, mayúsculas y ceros iniciales."""
+    """Limpia espacios, mayúsculas y ceros iniciales para comparaciones."""
     return serie.astype(str).str.strip().str.upper().str.lstrip('0')
 
 def buscar_columna(df, palabras_clave):
-    """Busca una columna de forma flexible."""
+    """Busca una columna de forma flexible por palabras clave."""
     for col in df.columns:
         if any(palabra in str(col).lower() for palabra in palabras_clave):
             return col
@@ -28,23 +28,23 @@ def truncar_texto(texto, limite):
     if punto_corte == -1: return recorte
     return recorte[:punto_corte].strip()
 
-# Persistencia de estados
+# Persistencia de datos entre pestañas
 if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
 if 'df_previa' not in st.session_state: st.session_state.df_previa = None
 
-st.title("🐦 Turaco PrestaShop Assistant - Versión Final Corregida")
-tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar y Auditar", "📦 FASE 2: Generar Carga Final"])
+st.title("🐦 Turaco PrestaShop Assistant")
+tab1, tab2 = st.tabs(["🔍 FASE 1: Identificación y Auditoría", "📦 FASE 2: Generar Carga Final"])
 
-# --- FASE 1: IDENTIFICACIÓN ---
+# --- FASE 1: IDENTIFICAR NOVEDADES ---
 with tab1:
     st.header("Auditoría de Novedades")
     c1, c2, c3 = st.columns(3)
-    with c1: f_ps = st.file_uploader("BBDD PrestaShop", type=['csv', 'xlsx'], key="ps_up")
-    with c2: f_amz = st.file_uploader("Listing Amazon", type=['txt', 'xlsx'], key="amz_up")
-    with c3: f_plan = st.file_uploader("Plan Lanzamiento", type=['xlsx'], key="plan_up")
+    with c1: f_ps = st.file_uploader("BBDD PrestaShop", type=['csv', 'xlsx'], key="f1")
+    with c2: f_amz = st.file_uploader("Listing Amazon", type=['txt', 'xlsx'], key="f2")
+    with c3: f_plan = st.file_uploader("Plan Lanzamiento", type=['xlsx'], key="f3")
 
     if all([f_ps, f_amz, f_plan]):
-        if st.button("🚀 Cruce de Novedades"):
+        if st.button("🚀 Iniciar Cruce"):
             try:
                 df_ps = pd.read_csv(f_ps, sep=None, engine='python', dtype=str) if f_ps.name.endswith('.csv') else pd.read_excel(f_ps, dtype=str)
                 df_amz = pd.read_excel(f_amz, dtype=str) if f_amz.name.endswith('.xlsx') else pd.read_csv(f_amz, sep='\t', encoding='latin1', dtype=str)
@@ -65,12 +65,15 @@ with tab1:
                 df_final = pd.merge(df_nov, df_plan_f[['sku_norm', 'notas']], on='sku_norm', how='inner')
                 
                 if not df_final.empty:
-                    c_asin = buscar_columna(df_final, ['asin'])
-                    c_name = buscar_columna(df_final, ['item-name', 'title'])
-                    df_viz = df_final[['seller-sku', c_name, c_asin, 'notas']].copy()
+                    c_asin_amz = buscar_columna(df_final, ['asin'])
+                    c_name_amz = buscar_columna(df_final, ['item-name', 'title', 'nombre'])
+                    
+                    # Incluimos ASIN para facilitar la copia a Keepa
+                    df_viz = df_final[['seller-sku', c_name_amz, c_asin_amz, 'notas']].copy()
+                    df_viz.rename(columns={c_asin_amz: 'ASIN', c_name_amz: 'item-name'}, inplace=True)
                     df_viz.insert(0, "Seleccionado", True)
                     st.session_state.df_previa = df_viz
-                else: st.warning("No hay novedades.")
+                else: st.warning("No se encontraron novedades.")
             except Exception as e: st.error(f"Error en Fase 1: {e}")
 
     if st.session_state.df_previa is not None:
@@ -80,15 +83,15 @@ with tab1:
 
         df_editado = st.data_editor(df_disp, hide_index=True, use_container_width=True)
 
-        if st.button("✅ Confirmar Selección"):
+        if st.button("✅ Confirmar y Seguir"):
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
-            st.success("Registros guardados. Ve a la Fase 2.")
+            st.success("Registros confirmados. Ve a la Fase 2.")
 
-# --- FASE 2: GENERADOR ---
+# --- FASE 2: GENERADOR DE IMPORTACIÓN ---
 with tab2:
-    st.header("Generador de Fichero CSV Completo")
+    st.header("Generador de Fichero PrestaShop")
     if st.session_state.df_revisado is None:
-        st.info("⚠️ Debes confirmar la selección en la Fase 1 primero.")
+        st.info("⚠️ Primero completa la Fase 1.")
     else:
         c1, c2 = st.columns(2)
         with c1: f_keepa = st.file_uploader("Keepa (XLSX)", type=['xlsx'])
@@ -114,8 +117,7 @@ with tab2:
                     c_asin_l = buscar_columna(df_l, ['asin'])
                     
                     if not all([c_asin_k, c_map_amz, c_map_ps]):
-                        st.error("Faltan columnas críticas en los archivos.")
-                        st.stop()
+                        st.error("Faltan columnas críticas."); st.stop()
 
                     df_m = pd.merge(df_l, df_k, left_on=c_asin_l, right_on=c_asin_k, how='inner')
 
@@ -125,7 +127,7 @@ with tab2:
                     faltantes = [str(cat) for cat in subcats_keepa if str(cat).lower().strip() not in subcats_mapeadas]
                     if faltantes: st.error(f"Faltan subcategorías: {faltantes}"); st.stop()
 
-                    # --- CONSTRUCCIÓN DEL CSV FINAL ---
+                    # --- CONSTRUCCIÓN ---
                     final = pd.DataFrame()
                     final['Product ID'] = range(900001, 900001 + len(df_m))
                     final['Active (0/1)'] = "1"
@@ -138,9 +140,7 @@ with tab2:
                     final['Tax rules ID'] = "1"
                     final['Wholesale price'] = ""
                     final['On sale (0/1)'] = "0"
-                    
-                    for col in ['Discount amount', 'Discount percent', 'Discount from (yyyy-mm-dd)', 'Discount to (yyyy-mm-dd)']:
-                        final[col] = ""
+                    for col in ['Discount amount', 'Discount percent', 'Discount from (yyyy-mm-dd)', 'Discount to (yyyy-mm-dd)']: final[col] = ""
 
                     final['Reference #'] = df_m['seller-sku']
                     final['Supplier reference #'] = df_m['seller-sku']
@@ -148,51 +148,38 @@ with tab2:
                     final['Manufacturer'] = "Cecotec"
                     final['EAN13'] = df_m[buscar_columna(df_k, ['ean'])] if buscar_columna(df_k, ['ean']) else ""
                     
-                    for col, val in zip(['UPC', 'Ecotax', 'Width', 'Height', 'Depth', 'Weight', 'Quantity'], ["", "", "1", "1", "1", "1", "0"]):
-                        final[col] = val
-                    
-                    for col in ['Minimal quantity', 'Low stock level', 'Visibility', 'Additional shipping cost', 'Unity', 'Unit price', 'Short description']:
-                        final[col] = ""
+                    for col, val in zip(['UPC', 'Ecotax', 'Width', 'Height', 'Depth', 'Weight', 'Quantity'], ["", "", "1", "1", "1", "1", "0"]): final[col] = val
+                    for col in ['Minimal quantity', 'Low stock level', 'Visibility', 'Additional shipping cost', 'Unity', 'Unit price', 'Short description']: final[col] = ""
 
                     cols_car = [c for c in df_m.columns if 'característica' in str(c)]
                     final['Description'] = df_m[cols_car].fillna('').agg(' '.join, axis=1).apply(lambda x: truncar_texto(x, 2000))
 
-                    for col in ['Tags (x,y,z...)', 'Meta title', 'Meta keywords', 'Meta description', 'URL rewritten']:
-                        final[col] = ""
-
+                    for col in ['Tags (x,y,z...)', 'Meta title', 'Meta keywords', 'Meta description', 'URL rewritten', 'Text when in stock', 'Text when backorder allowed']: final[col] = ""
                     final['Text when in stock'] = "In Stock"
-                    final['Text when backorder allowed'] = ""
                     final['Available for order (0 = No, 1 = Yes)'] = "1"
                     final['Product available date'] = ""
                     final['Product creation date'] = ""
-                    final['Show price (0 = No, 1 = Yes)'] = "1"
+                    final['Show price (0 = No, 1 = Yes)'] = "1" # Mantenemos Show price
 
-                    # Imágenes - Lógica Corregida
+                    # Imágenes
                     c_ref_i = buscar_columna(df_i, ['reference', 'sku'])
                     if c_ref_i:
                         df_i['urls'] = df_i.drop(columns=[c_ref_i], errors='ignore').fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
                         df_i_clean = df_i[[c_ref_i, 'urls']].drop_duplicates(c_ref_i)
                         final = pd.merge(final, df_i_clean, left_on='Reference #', right_on=c_ref_i, how='left')
                         final.rename(columns={'urls': 'Image URLs (x,y,z...)'}, inplace=True)
-                    else:
-                        final['Image URLs (x,y,z...)'] = ""
+                    else: final['Image URLs (x,y,z...)'] = ""
 
-                    # Columnas finales solicitadas
-                    final['Image alt texts (x,y,z...)'] = ""
-                    final['Delete existing images (0 = No, 1 = Yes)'] = "0"
-                    final['Feature(Name:Value:Position)'] = ""
-                    final['Available online only (0 = No, 1 = Yes)'] = "1"
-                    final['Condition'] = "new"
+                    for col, val in zip(['Image alt texts (x,y,z...)', 'Delete existing images (0 = No, 1 = Yes)', 'Feature(Name:Value:Position)', 'Available online only (0 = No, 1 = Yes)', 'Condition', 'Customizable (0 = No, 1 = Yes)', 'Uploadable files (0 = No, 1 = Yes)', 'Text fields (0 = No, 1 = Yes)', 'Out of stock', 'ID / Name of shop', 'Advanced stock management', 'Depends On Stock', 'Warehouse'], 
+                                        ["", "0", "", "1", "new", "0", "0", "0", "0", "0", "0", "0", "0"]): final[col] = val
+
+                    if c_ref_i in final.columns: final.drop(columns=[c_ref_i], inplace=True)
                     
-                    for col in ['Customizable (0 = No, 1 = Yes)', 'Uploadable files (0 = No, 1 = Yes)', 'Text fields (0 = No, 1 = Yes)', 'Out of stock', 'ID / Name of shop', 'Advanced stock management', 'Depends On Stock', 'Warehouse']:
-                        final[col] = "0"
-
-                    # Exportación Final
                     fecha_str = datetime.now().strftime("%Y%m%d")
                     nombre_fichero = f"{fecha_str}_Novedades.csv"
                     csv_buf = io.BytesIO()
-                    final.to_csv(csv_buf, index=False, sep=',', encoding='utf-8-sig')
+                    final.to_csv(csv_buf, index=False, sep=',', encoding='utf-8-sig') # Eliminada la columna reference extra
                     
-                    st.success(f"✅ Fichero '{nombre_fichero}' generado con éxito.")
+                    st.success(f"✅ Fichero '{nombre_fichero}' generado.")
                     st.download_button("⬇️ Descargar CSV PrestaShop", csv_buf.getvalue(), nombre_fichero, "text/csv")
-                except Exception as e: st.error(f"Error en Fase 2: {e}")
+                except Exception as e: st.error(f"Error: {e}")
