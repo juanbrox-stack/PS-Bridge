@@ -1,0 +1,9 @@
+📝 Resumen del Flujo de Trabajo para el Equipo
+Seguir estos 5 pasos de forma estricta:
+	1	CARGA: Copia en la carpeta el PlanLanzamiento.xlsx, listing_amazon.txt y prestashop_db.xlsx.
+	2	PASO 1: Doble clic a 1-IdentificarNovedades. Obtendrás la lista de ASINs.
+	3	DATOS:
+	◦	Sube los ASINs a Keepa → Guarda como keepa.xlsx.
+	◦	Busca los SKUs en Plytix → Exporta como plytix_exportImagenes.csv.
+	4	PASO 2: Doble clic a 2-GenerarSubidaPS. ¡Ya tienes tu CSV para PrestaShop!
+	5	RESET: Cuando hayas terminado de subir todo a la web, haz doble clic en 3-	LimpiarCarpeta para dejar la herramienta lista para mañana.
