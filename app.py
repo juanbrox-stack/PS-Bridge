@@ -81,12 +81,14 @@ with tab1:
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
             st.success(f"{len(st.session_state.df_revisado)} SKUs cargados.")
 
-# --- FASE 2: GENERADOR DE IMPORTACIÓN ---
+# --- FASE 2: GENERADOR DE IMPORTACIÓN (VERSIÓN BLINDADA) ---
 with tab2:
     st.header("Generador de Fichero PrestaShop")
     if st.session_state.df_revisado is None:
-        st.info("⚠️ Completa la Fase 1 primero.")
+        st.info("⚠️ Primero completa la revisión en la Fase 1.")
     else:
+        st.write(f"Procesando **{len(st.session_state.df_revisado)}** productos validados.")
+        
         c1, c2 = st.columns(2)
         with c1: f_keepa = st.file_uploader("Exportación Keepa (XLSX)", type=['xlsx'])
         with c2: 
@@ -96,7 +98,7 @@ with tab2:
         if all([f_keepa, f_img, f_cats]):
             if st.button("🪄 Generar CSV Final"):
                 try:
-                    # Carga de datos
+                    # 1. CARGA Y VALIDACIÓN DE COLUMNAS
                     df_k = pd.read_excel(f_keepa, dtype=str)
                     df_i = pd.read_csv(f_img, dtype=str)
                     df_c = pd.read_excel(f_cats, dtype=str)
@@ -104,96 +106,64 @@ with tab2:
 
                     for d in [df_k, df_i, df_c]: d.columns = d.columns.str.lower().str.strip()
 
-                    # Mapeo de columnas dinámicas
+                    # Búsqueda de columnas críticas
                     c_asin_k = buscar_columna(df_k, ['asin'])
-                    c_ean_k = buscar_columna(df_k, ['ean', 'código'])
-                    c_cat_k = buscar_columna(df_k, ['categorías: subcategoría'])
-                    c_cat_amz = buscar_columna(df_c, ['amazon', 'origen'])
-                    c_cat_ps = buscar_columna(df_c, ['prestashop', 'destino'])
+                    c_tit_k = buscar_columna(df_k, ['título', 'title', 'nombre'])
+                    c_cat_k = buscar_columna(df_k, ['categoría', 'category'])
                     
+                    # Diagnóstico: Si alguna columna esencial es None, paramos
+                    if not c_asin_k:
+                        st.error("❌ ERROR: No se encuentra la columna 'ASIN' en el fichero de Keepa.")
+                        st.stop()
+                    
+                    # 2. CRUCE DE DATOS
                     c_asin_l = buscar_columna(df_l, ['asin'])
-                    
-                    # Cruce Fase 1 + Keepa
                     df_m = pd.merge(df_l, df_k, left_on=c_asin_l, right_on=c_asin_k, how='inner')
 
-                    # --- CONSTRUCCIÓN DEL CSV FINAL (ESTRUCTURA SOLICITADA) ---
+                    if df_m.empty:
+                        st.error("❌ ERROR DE CRUCE: Los ASINs de tu selección no coinciden con los de Keepa.")
+                        st.info("Comprueba que has subido el fichero de Keepa que corresponde a estas novedades.")
+                        st.stop()
+
+                    # 3. CONSTRUCCIÓN DEL DATASET (Según estructura solicitada)
                     final = pd.DataFrame()
                     final['Product ID'] = range(900001, 900001 + len(df_m))
                     final['Active (0/1)'] = "1"
-                    
-                    # Nombres de columnas mapeados
                     final['Name *'] = df_m.iloc[:, 1] # item-name de la Fase 1
                     
-                    # Categorías con mapeo
+                    # Mapeo de categorías
+                    c_cat_amz = buscar_columna(df_c, ['amazon', 'origen'])
+                    c_cat_ps = buscar_columna(df_c, ['prestashop', 'destino'])
                     mapeo = pd.Series(df_c[c_cat_ps].values, index=df_c[c_cat_amz].str.lower().str.strip()).to_dict()
                     final['Categories (x,y,z...)'] = df_m[c_cat_k].apply(lambda x: mapeo.get(str(x).lower().strip(), x))
                     
-                    final['Price tax included'] = "999"
-                    final['Tax rules ID'] = "1"
-                    final['Wholesale price'] = ""
-                    final['On sale (0/1)'] = "0"
-                    
-                    # Campos de descuento vacíos
-                    for col in ['Discount amount', 'Discount percent', 'Discount from (yyyy-mm-dd)', 'Discount to (yyyy-mm-dd)']:
-                        final[col] = ""
-
                     final['Reference #'] = df_m['seller-sku']
-                    final['Supplier reference #'] = df_m['seller-sku']
+                    final['Description'] = df_m[[c for c in df_m.columns if 'característica' in str(c)]].fillna('').agg(' '.join, axis=1).str.slice(0, 2000)
+
+                    # 4. IMÁGENES
+                    c_ref_img = buscar_columna(df_i, ['reference', 'sku'])
+                    if c_ref_img:
+                        df_i['urls'] = df_i.drop(columns=[c_ref_img], errors='ignore').fillna('').apply(
+                            lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
+                        final = pd.merge(final, df_i[[c_ref_img, 'urls']].drop_duplicates(c_ref_img), 
+                                         left_on='Reference #', right_on=c_ref_img, how='left')
+                        final.rename(columns={'urls': 'Image URLs (x,y,z...)'}, inplace=True)
+
+                    # 5. RELLENO DE CAMPOS FIJOS
+                    final['Tax rules ID'] = "1"
+                    final['On sale (0/1)'] = "0"
                     final['Supplier'] = "Cecotec"
                     final['Manufacturer'] = "Cecotec"
-                    final['EAN13'] = df_m[c_ean_k] if c_ean_k else ""
-                    
-                    # Campos de medidas y stock
-                    for col, val in zip(['UPC', 'Ecotax', 'Width', 'Height', 'Depth', 'Weight', 'Quantity'], ["", "", "1", "1", "1", "1", "0"]):
-                        final[col] = val
-                    
-                    # Descripción dinámica
-                    cols_car = [c for c in df_m.columns if 'característica' in str(c)]
-                    final['Description'] = df_m[cols_car].fillna('').agg(' '.join, axis=1).str.slice(0, 2000) if cols_car else ""
-                    
-                    # Otros campos vacíos solicitados
-                    for col in ['Minimal quantity', 'Low stock level', 'Visibility', 'Additional shipping cost', 
-                                'Unity', 'Unit price', 'Short description', 'Tags (x,y,z...)', 'Meta title', 
-                                'Meta keywords', 'Meta description', 'URL rewritten']:
-                        final[col] = ""
-
-                    final['Text when in stock'] = "In Stock"
-                    final['Text when backorder allowed'] = ""
+                    final['Quantity'] = "0"
                     final['Available for order (0 = No, 1 = Yes)'] = "1"
-                    
-                    # Fechas vacías
-                    final['Product available date'] = ""
-                    final['Product creation date'] = ""
                     final['Show price (0 = No, 1 = Yes)'] = "1"
-
-                    # Imágenes
-                    c_ref_img = buscar_columna(df_i, ['reference', 'sku'])
-                    df_i['urls'] = df_i.drop(columns=[c_ref_img], errors='ignore').fillna('').apply(
-                        lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
-                    final = pd.merge(final, df_i[[c_ref_img, 'urls']].drop_duplicates(c_ref_img), 
-                                     left_on='Reference #', right_on=c_ref_img, how='left')
-                    final.rename(columns={'urls': 'Image URLs (x,y,z...)'}, inplace=True)
-                    
-                    # Campos finales fijos
-                    final['Image alt texts (x,y,z...)'] = ""
-                    final['Delete existing images (0 = No, 1 = Yes)'] = "0"
-                    final['Feature(Name:Value:Position)'] = ""
-                    final['Available online only (0 = No, 1 = Yes)'] = "1"
                     final['Condition'] = "new"
-                    final['Customizable (0 = No, 1 = Yes)'] = "0"
-                    final['Uploadable files (0 = No, 1 = Yes)'] = "0"
-                    final['Text fields (0 = No, 1 = Yes)'] = "0"
-                    final['Out of stock'] = "0"
-                    final['ID / Name of shop'] = "0"
-                    final['Advanced stock management'] = "0"
-                    final['Depends On Stock'] = "0"
-                    final['Warehouse'] = "0"
 
-                    # Eliminar columna técnica de unión de imágenes
-                    if c_ref_img in final.columns: final.drop(columns=[c_ref_img], inplace=True)
-
+                    # Descarga
                     csv_buf = io.StringIO()
                     final.to_csv(csv_buf, index=False, sep=',', encoding='utf-8-sig')
-                    st.success("✅ Fichero de importación generado con éxito.")
-                    st.download_button("⬇️ Descargar Fichero PrestaShop", csv_buf.getvalue(), "importacion_ps.csv", "text/csv")
-                except Exception as e: st.error(f"Error en Fase 2: {e}")
+                    st.success(f"✅ ¡Fichero generado! {len(final)} productos listos.")
+                    st.download_button("⬇️ Descargar CSV PrestaShop", csv_buf.getvalue(), "subida_final.csv", "text/csv")
+
+                except Exception as e:
+                    st.error(f"Error inesperado: {e}")
