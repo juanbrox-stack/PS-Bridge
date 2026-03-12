@@ -1,23 +1,45 @@
 import streamlit as st
 import pandas as pd
 import io
+import re
 from datetime import datetime
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Turaco PS Helper PRO", page_icon="🐦", layout="wide")
 
 def normalizar_sku(serie):
-    """Elimina espacios, mayúsculas y ceros iniciales para cruces precisos."""
+    """Limpia espacios, mayúsculas y ceros iniciales."""
     return serie.astype(str).str.strip().str.upper().str.lstrip('0')
 
 def buscar_columna(df, palabras_clave):
-    """Busca columnas de forma flexible ignorando mayúsculas y espacios."""
+    """Busca columnas de forma flexible."""
     for col in df.columns:
         if any(palabra in str(col).lower() for palabra in palabras_clave):
             return col
     return None
 
-# Persistencia de datos entre pestañas
+def truncar_texto(texto, limite):
+    """Corta el texto en el último espacio o punto sin exceder el límite."""
+    texto = str(texto).strip()
+    if len(texto) <= limite:
+        return texto
+    
+    # Tomamos el bloque hasta el límite
+    recorte = texto[:limite]
+    
+    # Buscamos la posición del último punto o espacio
+    ultimo_punto = recorte.rfind('.')
+    ultimo_espacio = recorte.rfind(' ')
+    
+    # Elegimos el punto de corte más lejano (pero dentro del límite)
+    punto_corte = max(ultimo_punto, ultimo_espacio)
+    
+    if punto_corte == -1:
+        return recorte # Si no hay espacios ni puntos, cortamos a machete
+    
+    return recorte[:punto_corte].strip()
+
+# Persistencia de datos
 if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
 if 'df_previa' not in st.session_state: st.session_state.df_previa = None
 
@@ -35,26 +57,22 @@ with tab1:
     if all([f_ps, f_amz, f_plan]):
         if st.button("🚀 Cruce de Novedades"):
             try:
-                # Lectura flexible según formato
                 df_ps = pd.read_csv(f_ps, sep=None, engine='python', dtype=str) if f_ps.name.endswith('.csv') else pd.read_excel(f_ps, dtype=str)
                 df_amz = pd.read_excel(f_amz, dtype=str) if f_amz.name.endswith('.xlsx') else pd.read_csv(f_amz, sep='\t', encoding='latin1', dtype=str)
                 df_plan = pd.read_excel(f_plan, dtype=str)
 
                 for d in [df_ps, df_amz, df_plan]: d.columns = d.columns.str.lower().str.strip()
 
-                # Normalización de SKUs
                 df_ps['sku_norm'] = normalizar_sku(df_ps['reference'])
                 df_amz['sku_norm'] = normalizar_sku(df_amz['seller-sku'])
                 df_plan['sku_norm'] = normalizar_sku(df_plan['sku'])
 
-                # Filtro por estados aprobados
                 estados_ok = ["Lanzamiento Completo", "Carrusel Enriquecidas", "Completo con Texto", "Fotos Rodaje SIN texto"]
                 df_plan_f = df_plan[df_plan['estado'].isin(estados_ok)]
 
                 skus_en_ps = df_ps['sku_norm'].unique()
                 df_nov = df_amz[~df_amz['sku_norm'].isin(skus_en_ps)]
                 
-                # Cruce final con Plan
                 df_final = pd.merge(df_nov, df_plan_f[['sku_norm', 'notas']], on='sku_norm', how='inner')
                 
                 if not df_final.empty:
@@ -75,15 +93,14 @@ with tab1:
 
         if st.button("✅ Confirmar Selección"):
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
-            st.success("Registros guardados en memoria. Ve a la pestaña 'FASE 2' arriba.")
+            st.success("Registros guardados. Ve a la Fase 2.")
 
 # --- FASE 2: GENERADOR ---
 with tab2:
     st.header("Generador de Carga PrestaShop")
     if st.session_state.df_revisado is None:
-        st.info("⚠️ Debes confirmar la selección en la Fase 1 primero.")
+        st.info("⚠️ Debes confirmar la selección en la Fase 1.")
     else:
-        st.write(f"Trabajando con **{len(st.session_state.df_revisado)}** productos validados.")
         c1, c2 = st.columns(2)
         with c1: f_keepa = st.file_uploader("Keepa (XLSX)", type=['xlsx'])
         with c2: 
@@ -100,36 +117,33 @@ with tab2:
 
                     for d in [df_k, df_i, df_c]: d.columns = d.columns.str.lower().str.strip()
 
-                    # Mapeo de columnas dinámicas
                     c_asin_k = buscar_columna(df_k, ['asin'])
-                    c_tit_k = buscar_columna(df_k, ['título', 'title']) # Columna B
-                    c_cat_sub = buscar_columna(df_k, ['subcategoría']) # Subcategoría
+                    c_tit_k = buscar_columna(df_k, ['título', 'title']) 
+                    c_cat_sub = buscar_columna(df_k, ['subcategoría']) 
                     c_map_amz = buscar_columna(df_c, ['amazon', 'origen'])
                     c_map_ps = buscar_columna(df_c, ['prestashop', 'destino'])
-                    
                     c_asin_l = buscar_columna(df_l, ['asin'])
                     
-                    # Cruce Fase 1 + Keepa
                     df_m = pd.merge(df_l, df_k, left_on=c_asin_l, right_on=c_asin_k, how='inner')
 
-                    # --- VALIDACIÓN DE CATEGORÍAS (NOVEDAD) ---
+                    # Validación Categorías
                     subcats_keepa = df_m[c_cat_sub].unique()
                     subcats_mapeadas = df_c[c_map_amz].str.lower().str.strip().unique()
                     faltantes = [str(cat) for cat in subcats_keepa if str(cat).lower().strip() not in subcats_mapeadas]
                     
                     if faltantes:
-                        st.error("⚠️ ERROR: Subcategorías de Keepa no encontradas en tu Excel de Mapeo:")
+                        st.error("⚠️ Faltan subcategorías en el mapeo:")
                         st.write(faltantes)
-                        st.warning("Añade estas categorías a 'ps_categories.xlsx' y vuelve a subir el archivo.")
-                        st.stop() # Detenemos el proceso para evitar errores en la carga
+                        st.stop()
 
                     # --- CONSTRUCCIÓN ---
                     final = pd.DataFrame()
                     final['Product ID'] = range(900001, 900001 + len(df_m))
                     final['Active (0/1)'] = "1"
-                    final['Name *'] = df_m[c_tit_k].str.slice(0, 128) # Nombre desde Título Keepa
                     
-                    # Mapeo de Categoría
+                    # Nombre con recorte inteligente (128 caracteres)
+                    final['Name *'] = df_m[c_tit_k].apply(lambda x: truncar_texto(x, 128))
+                    
                     mapeo = pd.Series(df_c[c_map_ps].values, index=df_c[c_map_amz].str.lower().str.strip()).to_dict()
                     final['Categories (x,y,z...)'] = df_m[c_cat_sub].apply(lambda x: mapeo.get(str(x).lower().strip(), x))
                     
@@ -141,16 +155,14 @@ with tab2:
                     final['Manufacturer'] = "Cecotec"
                     final['EAN13'] = df_m[buscar_columna(df_k, ['ean'])] if buscar_columna(df_k, ['ean']) else ""
                     
-                    # Campos de medidas y stock
-                    for col, val in zip(['Width', 'Height', 'Depth', 'Weight', 'Quantity'], ["1", "1", "1", "1", "0"]): final[col] = val
-                    
-                    # Descripción dinámica
+                    # Descripción con recorte inteligente (2000 caracteres)
                     cols_car = [c for c in df_m.columns if 'característica' in str(c)]
-                    final['Description'] = df_m[cols_car].fillna('').agg(' '.join, axis=1).str.slice(0, 2000)
+                    raw_desc = df_m[cols_car].fillna('').agg(' '.join, axis=1)
+                    final['Description'] = raw_desc.apply(lambda x: truncar_texto(x, 2000))
 
-                    # Campos fijos adicionales
-                    for col, val in zip(['Text when in stock', 'Available for order (0 = No, 1 = Yes)', 'Show price (0 = No, 1 = Yes)', 'Condition', 'Available online only (0 = No, 1 = Yes)'], 
-                                        ["In Stock", "1", "1", "new", "1"]):
+                    # Campos fijos
+                    for col, val in zip(['Width', 'Height', 'Depth', 'Weight', 'Quantity', 'Condition', 'Show price (0 = No, 1 = Yes)'], 
+                                        ["1", "1", "1", "1", "0", "new", "1"]):
                         final[col] = val
 
                     # Imágenes
@@ -159,18 +171,18 @@ with tab2:
                     final = pd.merge(final, df_i[[c_ref_i, 'urls']].drop_duplicates(c_ref_i), left_on='Reference #', right_on=c_ref_i, how='left')
                     final.rename(columns={'urls': 'Image URLs (x,y,z...)'}, inplace=True)
                     
-                    # Campos finales de la plantilla (ID Shop, Out of stock, etc.)
+                    # Campos adicionales de la tabla solicitada
                     for col in ['Out of stock', 'ID / Name of shop', 'Advanced stock management', 'Depends On Stock', 'Warehouse']:
                         final[col] = "0"
+                    final['Available online only (0 = No, 1 = Yes)'] = "1"
 
-                    # Exportación Final con BOM para corregir caracteres
+                    # Exportación con nombre de fecha
                     fecha_str = datetime.now().strftime("%Y%m%d")
                     nombre_fichero = f"{fecha_str}_Novedades.csv"
                     
                     csv_buf = io.BytesIO()
-                    # El parámetro utf-8-sig soluciona los caracteres extraños en Excel
-                    final.to_csv(csv_buf, index=False, sep=',', encoding='utf-8-sig')
+                    final.to_csv(csv_buf, index=False, sep=',', encoding='utf-8-sig') # BOM para Excel
                     
-                    st.success(f"✅ ¡ÉXITO! {len(final)} productos listos.")
+                    st.success(f"✅ ¡ÉXITO! Fichero '{nombre_fichero}' generado.")
                     st.download_button("⬇️ Descargar CSV PrestaShop", csv_buf.getvalue(), nombre_fichero, "text/csv")
                 except Exception as e: st.error(f"Error: {e}")
