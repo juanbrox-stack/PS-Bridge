@@ -8,11 +8,9 @@ from datetime import datetime
 st.set_page_config(page_title="Turaco PS Helper ULTRA", page_icon="🐦", layout="wide")
 
 def limpiar_texto_critico(texto):
-    """Limpia saltos de línea y comillas dobles que rompen la estructura CSV."""
+    """Elimina saltos y comillas dobles para no romper el CSV."""
     if pd.isna(texto): return ""
-    # Eliminamos saltos de línea y convertimos comillas dobles en simples para no romper el CSV
-    t = str(texto).replace('\n', ' ').replace('\r', ' ').replace('"', "'").strip()
-    return t
+    return str(texto).replace('\n', ' ').replace('\r', ' ').replace('"', "'").strip()
 
 def normalizar_sku(serie):
     """Limpia espacios y ceros iniciales."""
@@ -38,7 +36,7 @@ if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
 if 'df_previa' not in st.session_state: st.session_state.df_previa = None
 if 'df_final_generado' not in st.session_state: st.session_state.df_final_generado = None
 
-st.title("🐦 Turaco PrestaShop Assistant - v3.3 (Ultra Safe)")
+st.title("🐦 Turaco PrestaShop Assistant - v3.4")
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar y Auditar", "📦 FASE 2: Generar Carga Final"])
 
 # --- FASE 1: IDENTIFICAR ---
@@ -56,14 +54,11 @@ with tab1:
                 df_amz = pd.read_excel(f_amz, dtype=str) if f_amz.name.endswith('.xlsx') else pd.read_csv(f_amz, sep='\t', encoding='latin1', dtype=str)
                 df_plan = pd.read_excel(f_plan, dtype=str)
                 for d in [df_ps, df_amz, df_plan]: d.columns = d.columns.str.lower().str.strip()
-
                 df_ps['sku_norm'] = normalizar_sku(df_ps['reference'])
                 df_amz['sku_norm'] = normalizar_sku(df_amz['seller-sku'])
                 df_plan['sku_norm'] = normalizar_sku(df_plan['sku'])
-
                 df_nov = df_amz[~df_amz['sku_norm'].isin(df_ps['sku_norm'].unique())]
                 df_final = pd.merge(df_nov, df_plan[df_plan['estado'].isin(["Lanzamiento Completo", "Carrusel Enriquecidas", "Completo con Texto", "Fotos Rodaje SIN texto"])][['sku_norm', 'notas']], on='sku_norm', how='inner')
-                
                 if not df_final.empty:
                     c_asin = buscar_columna(df_final, ['asin'])
                     c_name = buscar_columna(df_final, ['item-name', 'title'])
@@ -82,7 +77,7 @@ with tab1:
 
 # --- FASE 2: GENERADOR ---
 with tab2:
-    st.header("Generador de Fichero CSV Blindado")
+    st.header("Generador de Fichero CSV Sin Errores")
     if st.session_state.df_revisado is None:
         st.info("⚠️ Primero confirma la selección en la Fase 1.")
     else:
@@ -99,26 +94,23 @@ with tab2:
                     df_i = pd.read_csv(f_img, dtype=str)
                     df_c = pd.read_excel(f_cats, dtype=str)
                     df_l = st.session_state.df_revisado
-
                     for d in [df_k, df_i, df_c]: d.columns = d.columns.str.lower().str.strip()
 
                     c_asin_k = buscar_columna(df_k, ['asin'])
                     df_k = df_k.drop_duplicates(subset=[c_asin_k]) 
-
                     c_tit_k = buscar_columna(df_k, ['título', 'title'])
                     c_cat_sub = buscar_columna(df_k, ['subcategoría'])
                     c_asin_l = buscar_columna(df_l, ['asin'])
                     
                     df_m = pd.merge(df_l, df_k, left_on=c_asin_l, right_on=c_asin_k, how='inner')
 
-                    # Construcción final
+                    # --- CONSTRUCCIÓN DE COLUMNAS (ORDEN ESTRICTO) ---
                     final = pd.DataFrame()
                     final['Product ID'] = range(900001, 900001 + len(df_m))
                     final['Active (0/1)'] = "1"
                     final['Name *'] = df_m[c_tit_k].apply(lambda x: truncar_texto(x, 128))
                     
-                    mapeo = pd.Series(df_c[buscar_columna(df_c, ['prestashop'])].values, 
-                                      index=df_c[buscar_columna(df_c, ['amazon'])].str.lower().str.strip()).to_dict()
+                    mapeo = pd.Series(df_c[buscar_columna(df_c, ['prestashop'])].values, index=df_c[buscar_columna(df_c, ['amazon'])].str.lower().str.strip()).to_dict()
                     final['Categories (x,y,z...)'] = df_m[c_cat_sub].apply(lambda x: mapeo.get(str(x).lower().strip(), x))
                     
                     final['Price tax included'] = "999"; final['Tax rules ID'] = "1"
@@ -136,19 +128,19 @@ with tab2:
                     final['Available for order (0 = No, 1 = Yes)'] = "1"
                     final['Show price (0 = No, 1 = Yes)'] = "1"
 
-                    # Imágenes
+                    # --- PROCESO DE IMÁGENES (LIMPIO) ---
                     c_ref_i = buscar_columna(df_i, ['reference', 'sku'])
                     df_i['urls'] = df_i.drop(columns=[c_ref_i], errors='ignore').fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
-                    final = pd.merge(final, df_i[[c_ref_i, 'urls']].drop_duplicates(c_ref_i), left_on='Reference #', right_on=c_ref_i, how='left')
-                    final.rename(columns={'urls': 'Image URLs (x,y,z...)'}, inplace=True)
+                    df_i_map = df_i[[c_ref_i, 'urls']].drop_duplicates(c_ref_i).set_index(c_ref_i)['urls'].to_dict()
+                    
+                    # Asignamos la URL directamente sin usar merge para evitar columnas 'reference' extra
+                    final['Image URLs (x,y,z...)'] = final['Reference #'].map(df_i_map).fillna("")
                     
                     for col in ['Condition', 'Available online only (0 = No, 1 = Yes)', 'Out of stock', 'ID / Name of shop', 'Warehouse']:
                         final[col] = "new" if "Condition" in col else ("1" if "Available" in col else "0")
                     
-                    # Limpieza masiva de todas las celdas
                     st.session_state.df_final_generado = final.applymap(limpiar_texto_critico)
-                    st.success("✅ Procesamiento ULTRA completado.")
-
+                    st.success("✅ Procesamiento completado sin columnas duplicadas.")
                 except Exception as e: st.error(f"Error: {e}")
 
         if st.session_state.df_final_generado is not None:
@@ -158,7 +150,7 @@ with tab2:
             
             fecha_str = datetime.now().strftime("%Y%m%d")
             csv_buf = io.StringIO()
-            # BLINDAJE CSV: Quote_All fuerza comillas en cada celda para que Excel no se pierda
+            # SEPARADOR COMILLA TOTAL para que Excel no se pierda
             st.session_state.df_final_generado.to_csv(csv_buf, index=False, sep=',', quoting=csv.QUOTE_ALL, encoding='utf-8-sig')
             
             st.download_button(
