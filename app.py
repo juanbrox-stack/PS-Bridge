@@ -6,6 +6,11 @@ from datetime import datetime
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Turaco PS Helper PRO", page_icon="🐦", layout="wide")
 
+def limpiar_saltos(texto):
+    """Elimina saltos de línea internos para evitar que el CSV se rompa."""
+    if pd.isna(texto): return ""
+    return str(texto).replace('\n', ' ').replace('\r', ' ').strip()
+
 def normalizar_sku(serie):
     """Limpia espacios, mayúsculas y ceros iniciales."""
     return serie.astype(str).str.strip().str.upper().str.lstrip('0')
@@ -18,8 +23,8 @@ def buscar_columna(df, palabras_clave):
     return None
 
 def truncar_texto(texto, limite):
-    """Corta el texto sin romper palabras."""
-    texto = str(texto).strip()
+    """Corta el texto en el último espacio/punto sin romper palabras."""
+    texto = limpiar_saltos(texto)
     if len(texto) <= limite: return texto
     recorte = texto[:limite]
     punto_corte = max(recorte.rfind('.'), recorte.rfind(' '))
@@ -28,8 +33,9 @@ def truncar_texto(texto, limite):
 # Persistencia de estados
 if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
 if 'df_previa' not in st.session_state: st.session_state.df_previa = None
+if 'df_final_generado' not in st.session_state: st.session_state.df_final_generado = None
 
-st.title("🐦 Turaco PrestaShop Assistant - v3.0")
+st.title("🐦 Turaco PrestaShop Assistant - v3.2")
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar y Auditar", "📦 FASE 2: Generar Carga Final"])
 
 # --- FASE 1: IDENTIFICACIÓN ---
@@ -38,16 +44,16 @@ with tab1:
     c1, c2, c3 = st.columns(3)
     with c1: 
         f_ps = st.file_uploader("1. BBDD PrestaShop", type=['csv', 'xlsx'])
-        st.caption("📌 **Columnas necesarias:** reference (SKU).")
+        st.caption("📌 **Necesario:** columna 'reference'.")
     with c2: 
         f_amz = st.file_uploader("2. Listing Amazon", type=['txt', 'xlsx'])
-        st.caption("📌 **Columnas necesarias:** seller-sku, asin1 (o asin), item-name.")
+        st.caption("📌 **Necesario:** 'seller-sku', 'asin1', 'item-name'.")
     with c3: 
         f_plan = st.file_uploader("3. Plan Lanzamiento", type=['xlsx'])
-        st.caption("📌 **Columnas necesarias:** sku, estado, notas.")
+        st.caption("📌 **Necesario:** 'sku', 'estado', 'notas'.")
 
     if all([f_ps, f_amz, f_plan]):
-        if st.button("🚀 Iniciar Cruce de Novedades"):
+        if st.button("🚀 Iniciar Cruce"):
             try:
                 df_ps = pd.read_csv(f_ps, sep=None, engine='python', dtype=str) if f_ps.name.endswith('.csv') else pd.read_excel(f_ps, dtype=str)
                 df_amz = pd.read_excel(f_amz, dtype=str) if f_amz.name.endswith('.xlsx') else pd.read_csv(f_amz, sep='\t', encoding='latin1', dtype=str)
@@ -77,32 +83,27 @@ with tab1:
 
     if st.session_state.df_previa is not None:
         st.divider()
-        st.subheader("📋 Revisión de Registros")
-        st.info("Copia los **ASINs** para Keepa. Desmarca los que no quieras procesar.")
         df_editado = st.data_editor(st.session_state.df_previa, hide_index=True, use_container_width=True)
-
-        if st.button("✅ Confirmar y pasar a Fase 2"):
+        if st.button("✅ Confirmar Selección"):
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
-            st.success("Registros guardados. Ve a la pestaña 'FASE 2' arriba.")
+            st.success("Registros guardados. Pasa a la Fase 2.")
 
 # --- FASE 2: GENERADOR ---
 with tab2:
-    st.header("Generador de Fichero de Importación")
+    st.header("Generador de Fichero CSV")
     if st.session_state.df_revisado is None:
         st.info("⚠️ Primero confirma la selección en la Fase 1.")
     else:
         c1, c2 = st.columns(2)
         with c1: 
-            f_keepa = st.file_uploader("1. Exportación Keepa (XLSX)", type=['xlsx'])
-            st.info("📑 **Columnas críticas Keepa:** ASIN, Título (Title), Subcategoría (Subcategory), EAN.")
+            f_keepa = st.file_uploader("1. Keepa (XLSX)", type=['xlsx'])
+            st.caption("📌 **Necesario:** ASIN, Título, Subcategoría, EAN.")
         with c2: 
             f_img = st.file_uploader("2. Imágenes (CSV)", type=['csv'])
-            st.caption("📌 **Columnas:** reference (o SKU) y columnas de URLs.")
             f_cats = st.file_uploader("3. Mapeo Categorías (XLSX)", type=['xlsx'])
-            st.caption("📌 **Columnas:** amazon (origen), prestashop (destino).")
 
         if all([f_keepa, f_img, f_cats]):
-            if st.button("🪄 Generar Fichero Final"):
+            if st.button("🪄 Procesar Fichero"):
                 try:
                     df_k = pd.read_excel(f_keepa, dtype=str)
                     df_i = pd.read_csv(f_img, dtype=str)
@@ -111,9 +112,8 @@ with tab2:
 
                     for d in [df_k, df_i, df_c]: d.columns = d.columns.str.lower().str.strip()
 
-                    # Robustez: Limpiar duplicados en Keepa
                     c_asin_k = buscar_columna(df_k, ['asin'])
-                    df_k = df_k.drop_duplicates(subset=[c_asin_k])
+                    df_k = df_k.drop_duplicates(subset=[c_asin_k]) 
 
                     c_tit_k = buscar_columna(df_k, ['título', 'title'])
                     c_cat_sub = buscar_columna(df_k, ['subcategoría'])
@@ -121,7 +121,7 @@ with tab2:
                     
                     df_m = pd.merge(df_l, df_k, left_on=c_asin_l, right_on=c_asin_k, how='inner')
 
-                    # Construcción final de 64 columnas
+                    # Construcción con limpieza profunda
                     final = pd.DataFrame()
                     final['Product ID'] = range(900001, 900001 + len(df_m))
                     final['Active (0/1)'] = "1"
@@ -136,7 +136,7 @@ with tab2:
                     final['Reference #'] = df_m['seller-sku']
                     final['Supplier reference #'] = df_m['seller-sku']
                     final['Supplier'] = "Cecotec"; final['Manufacturer'] = "Cecotec"
-                    final['EAN13'] = df_m[buscar_columna(df_k, ['ean'])] if buscar_columna(df_k, ['ean']) else ""
+                    final['EAN13'] = df_m[buscar_columna(df_k, ['ean'])].apply(limpiar_saltos) if buscar_columna(df_k, ['ean']) else ""
                     
                     for col, val in zip(['Width', 'Height', 'Depth', 'Weight', 'Quantity'], ["1", "1", "1", "1", "0"]): final[col] = val
                     
@@ -153,13 +153,34 @@ with tab2:
                     final = pd.merge(final, df_i[[c_ref_i, 'urls']].drop_duplicates(c_ref_i), left_on='Reference #', right_on=c_ref_i, how='left')
                     final.rename(columns={'urls': 'Image URLs (x,y,z...)'}, inplace=True)
                     
-                    for col in ['Condition', 'Available online only (0 = No, 1 = Yes)']: final[col] = "new" if "Condition" in col else "1"
-
-                    # Exportación Final
-                    fecha_str = datetime.now().strftime("%Y%m%d")
-                    csv_buf = io.BytesIO()
-                    final.to_csv(csv_buf, index=False, sep=',', encoding='utf-8-sig') # Separación automática en Excel
+                    # Relleno campos finales
+                    for col in ['Condition', 'Available online only (0 = No, 1 = Yes)', 'Out of stock', 'ID / Name of shop', 'Warehouse']:
+                        final[col] = "new" if "Condition" in col else ("1" if "Available" in col else "0")
                     
-                    st.success(f"✅ ¡ÉXITO! Fichero '{fecha_str}_Novedades.csv' generado.")
-                    st.download_button("⬇️ Descargar Fichero PrestaShop", csv_buf.getvalue(), f"{fecha_str}_Novedades.csv", "text/csv")
+                    st.session_state.df_final_generado = final.applymap(limpiar_saltos)
+                    st.success("✅ Procesamiento completado. Revisa la previsualización debajo.")
+
                 except Exception as e: st.error(f"Error: {e}")
+
+        # --- SECCIÓN DE PREVISUALIZACIÓN ---
+        if st.session_state.df_final_generado is not None:
+            st.divider()
+            st.subheader("👀 Previsualización del Fichero Final")
+            st.dataframe(st.session_state.df_final_generado, use_container_width=True)
+            
+            fecha_str = datetime.now().strftime("%Y%m%d")
+            csv_buf = io.BytesIO()
+            st.session_state.df_final_generado.to_csv(csv_buf, index=False, sep=',', encoding='utf-8-sig')
+            
+            st.download_button(
+                label=f"⬇️ Descargar {fecha_str}_Novedades.csv",
+                data=csv_buf.getvalue(),
+                file_name=f"{fecha_str}_Novedades.csv",
+                mime="text/csv"
+            )
+
+            if st.button("🗑️ Limpiar y empezar de nuevo"):
+                st.session_state.df_revisado = None
+                st.session_state.df_previa = None
+                st.session_state.df_final_generado = None
+                st.rerun()
