@@ -1,16 +1,16 @@
 import streamlit as st
 import pandas as pd
 import io
-import csv
 from datetime import datetime
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Turaco PS Helper ULTRA", page_icon="🐦", layout="wide")
+st.set_page_config(page_title="Turaco PS Helper PRO", page_icon="🐦", layout="wide")
 
-def limpiar_texto_critico(texto):
-    """Elimina saltos y comillas dobles para no romper el CSV."""
+def limpiar_texto_excel(texto):
+    """Limpia caracteres que podrían causar errores visuales en Excel."""
     if pd.isna(texto): return ""
-    return str(texto).replace('\n', ' ').replace('\r', ' ').replace('"', "'").strip()
+    # Eliminamos saltos de línea para que la fila no se haga gigante, pero mantenemos el texto limpio
+    return str(texto).replace('\n', ' ').replace('\r', ' ').strip()
 
 def normalizar_sku(serie):
     """Limpia espacios y ceros iniciales."""
@@ -25,7 +25,7 @@ def buscar_columna(df, palabras_clave):
 
 def truncar_texto(texto, limite):
     """Recorte inteligente sin romper palabras."""
-    texto = limpiar_texto_critico(texto)
+    texto = limpiar_texto_excel(texto)
     if len(texto) <= limite: return texto
     recorte = texto[:limite]
     punto_corte = max(recorte.rfind('.'), recorte.rfind(' '))
@@ -36,7 +36,7 @@ if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
 if 'df_previa' not in st.session_state: st.session_state.df_previa = None
 if 'df_final_generado' not in st.session_state: st.session_state.df_final_generado = None
 
-st.title("🐦 Turaco PrestaShop Assistant - v3.4")
+st.title("🐦 Turaco PrestaShop Assistant - v4.0 (Excel Directo)")
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar y Auditar", "📦 FASE 2: Generar Carga Final"])
 
 # --- FASE 1: IDENTIFICAR ---
@@ -77,7 +77,7 @@ with tab1:
 
 # --- FASE 2: GENERADOR ---
 with tab2:
-    st.header("Generador de Fichero CSV Sin Errores")
+    st.header("Generador de Carga Directa a Excel")
     if st.session_state.df_revisado is None:
         st.info("⚠️ Primero confirma la selección en la Fase 1.")
     else:
@@ -88,7 +88,7 @@ with tab2:
             f_cats = st.file_uploader("3. Mapeo Categorías (XLSX)", type=['xlsx'])
 
         if all([f_keepa, f_img, f_cats]):
-            if st.button("🪄 Procesar Fichero"):
+            if st.button("🪄 Generar Excel"):
                 try:
                     df_k = pd.read_excel(f_keepa, dtype=str)
                     df_i = pd.read_csv(f_img, dtype=str)
@@ -104,7 +104,7 @@ with tab2:
                     
                     df_m = pd.merge(df_l, df_k, left_on=c_asin_l, right_on=c_asin_k, how='inner')
 
-                    # --- CONSTRUCCIÓN DE COLUMNAS (ORDEN ESTRICTO) ---
+                    # --- CONSTRUCCIÓN DE COLUMNAS ---
                     final = pd.DataFrame()
                     final['Product ID'] = range(900001, 900001 + len(df_m))
                     final['Active (0/1)'] = "1"
@@ -117,7 +117,7 @@ with tab2:
                     final['Reference #'] = df_m['seller-sku']
                     final['Supplier reference #'] = df_m['seller-sku']
                     final['Supplier'] = "Cecotec"; final['Manufacturer'] = "Cecotec"
-                    final['EAN13'] = df_m[buscar_columna(df_k, ['ean'])].apply(limpiar_texto_critico) if buscar_columna(df_k, ['ean']) else ""
+                    final['EAN13'] = df_m[buscar_columna(df_k, ['ean'])].apply(limpiar_texto_excel) if buscar_columna(df_k, ['ean']) else ""
                     
                     for col, val in zip(['Width', 'Height', 'Depth', 'Weight', 'Quantity'], ["1", "1", "1", "1", "0"]): final[col] = val
                     
@@ -128,34 +128,33 @@ with tab2:
                     final['Available for order (0 = No, 1 = Yes)'] = "1"
                     final['Show price (0 = No, 1 = Yes)'] = "1"
 
-                    # --- PROCESO DE IMÁGENES (LIMPIO) ---
+                    # IMÁGENES (MAPEO SIN MERGE)
                     c_ref_i = buscar_columna(df_i, ['reference', 'sku'])
                     df_i['urls'] = df_i.drop(columns=[c_ref_i], errors='ignore').fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
                     df_i_map = df_i[[c_ref_i, 'urls']].drop_duplicates(c_ref_i).set_index(c_ref_i)['urls'].to_dict()
-                    
-                    # Asignamos la URL directamente sin usar merge para evitar columnas 'reference' extra
                     final['Image URLs (x,y,z...)'] = final['Reference #'].map(df_i_map).fillna("")
                     
                     for col in ['Condition', 'Available online only (0 = No, 1 = Yes)', 'Out of stock', 'ID / Name of shop', 'Warehouse']:
                         final[col] = "new" if "Condition" in col else ("1" if "Available" in col else "0")
                     
-                    st.session_state.df_final_generado = final.applymap(limpiar_texto_critico)
-                    st.success("✅ Procesamiento completado sin columnas duplicadas.")
+                    st.session_state.df_final_generado = final.applymap(limpiar_texto_excel)
+                    st.success("✅ Fichero Excel generado correctamente.")
                 except Exception as e: st.error(f"Error: {e}")
 
         if st.session_state.df_final_generado is not None:
             st.divider()
-            st.subheader("👀 Previsualización del Fichero Final")
+            st.subheader("👀 Previsualización")
             st.dataframe(st.session_state.df_final_generado, use_container_width=True)
             
             fecha_str = datetime.now().strftime("%Y%m%d")
-            csv_buf = io.StringIO()
-            # SEPARADOR COMILLA TOTAL para que Excel no se pierda
-            st.session_state.df_final_generado.to_csv(csv_buf, index=False, sep=',', quoting=csv.QUOTE_ALL, encoding='utf-8-sig')
+            # EXPORTAR A EXCEL
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                st.session_state.df_final_generado.to_excel(writer, index=False, sheet_name='Importar')
             
             st.download_button(
-                label=f"⬇️ Descargar {fecha_str}_Novedades.csv",
-                data=csv_buf.getvalue(),
-                file_name=f"{fecha_str}_Novedades.csv",
-                mime="text/csv"
+                label=f"⬇️ Descargar {fecha_str}_Novedades.xlsx",
+                data=output.getvalue(),
+                file_name=f"{fecha_str}_Novedades.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
