@@ -35,10 +35,10 @@ if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
 if 'df_previa' not in st.session_state: st.session_state.df_previa = None
 if 'df_final_generado' not in st.session_state: st.session_state.df_final_generado = None
 
-st.title("🐦 Turaco PrestaShop Assistant - v4.2")
+st.title("🐦 Turaco PrestaShop Assistant - v4.3")
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar y Auditar", "📦 FASE 2: Generar Carga Final"])
 
-# --- FASE 1 ---
+# --- FASE 1: IDENTIFICAR ---
 with tab1:
     st.header("Auditoría de Novedades")
     c1, c2, c3 = st.columns(3)
@@ -59,8 +59,17 @@ with tab1:
                 df_amz['sku_norm'] = normalizar_sku(df_amz['seller-sku'])
                 df_plan['sku_norm'] = normalizar_sku(df_plan['sku'])
                 
+                # NUEVA CONDICIÓN: Se incluye 'Solo MAIN'
+                estados_validos = [
+                    "Lanzamiento Completo", 
+                    "Carrusel Enriquecidas", 
+                    "Completo con Texto", 
+                    "Fotos Rodaje SIN texto",
+                    "Solo MAIN"
+                ]
+                
                 df_nov = df_amz[~df_amz['sku_norm'].isin(df_ps['sku_norm'].unique())]
-                df_final = pd.merge(df_nov, df_plan[df_plan['estado'].isin(["Lanzamiento Completo", "Carrusel Enriquecidas", "Completo con Texto", "Fotos Rodaje SIN texto"])][['sku_norm', 'notas']], on='sku_norm', how='inner')
+                df_final = pd.merge(df_nov, df_plan[df_plan['estado'].isin(estados_validos)][['sku_norm', 'notas']], on='sku_norm', how='inner')
                 
                 if not df_final.empty:
                     c_asin = buscar_columna(df_final, ['asin'])
@@ -69,26 +78,24 @@ with tab1:
                     df_viz.rename(columns={c_asin: 'ASIN', c_name: 'item-name'}, inplace=True)
                     df_viz.insert(0, "Seleccionado", True)
                     st.session_state.df_previa = df_viz
-                else: st.warning("No hay novedades.")
+                else: st.warning("No hay novedades con los estados seleccionados.")
             except Exception as e: st.error(f"Error: {e}")
 
     if st.session_state.df_previa is not None:
         df_editado = st.data_editor(st.session_state.df_previa, hide_index=True, use_container_width=True)
         if st.button("✅ Confirmar Selección"):
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
-            st.success("Registros guardados.")
+            st.success("Registros guardados. Pasa a la Fase 2.")
 
-# --- FASE 2 ---
+# --- FASE 2: GENERADOR ---
 with tab2:
     st.header("Generador de Carga Directa a Excel")
     if st.session_state.df_revisado is None:
         st.info("⚠️ Primero confirma la selección en la Fase 1.")
     else:
         c1, c2 = st.columns(2)
-        with c1: 
-            f_keepa = st.file_uploader("1. Keepa (XLSX)", type=['xlsx'])
+        with c1: f_keepa = st.file_uploader("1. Keepa (XLSX)", type=['xlsx'])
         with c2: 
-            # Cambiado de CSV a XLSX
             f_img = st.file_uploader("2. Imágenes (XLSX)", type=['xlsx'])
             f_cats = st.file_uploader("3. Mapeo Categorías (XLSX)", type=['xlsx'])
 
@@ -96,7 +103,7 @@ with tab2:
             if st.button("🪄 Generar Excel"):
                 try:
                     df_k = pd.read_excel(f_keepa, dtype=str)
-                    df_i = pd.read_excel(f_img, dtype=str) # Lectura Excel
+                    df_i = pd.read_excel(f_img, dtype=str)
                     df_c = pd.read_excel(f_cats, dtype=str)
                     df_l = st.session_state.df_revisado
                     
@@ -134,24 +141,22 @@ with tab2:
 
                     final['Text when in stock'] = "In Stock"; final['Available for order (0 = No, 1 = Yes)'] = "1"; final['Show price (0 = No, 1 = Yes)'] = "1"
 
-                    # --- LÓGICA DE IMÁGENES SIN DUPLICADOS (AHORA PARA EXCEL) ---
+                    # --- LÓGICA DE IMÁGENES (MAPEO XLSX) ---
                     c_ref_i = buscar_columna(df_i, ['reference', 'sku'])
                     df_i[c_ref_i] = normalizar_sku(df_i[c_ref_i])
                     
                     cols_url = [c for c in df_i.columns if c != c_ref_i]
-                    # Generamos el string de URLs una sola vez por fila
                     df_i['urls_tmp'] = df_i[cols_url].fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
                     
-                    # Mapeo único SKU -> URLs
+                    # Filtro de duplicados estricto
                     df_i_map = df_i.drop_duplicates(subset=[c_ref_i]).set_index(c_ref_i)['urls_tmp'].to_dict()
-                    
                     final['Image URLs (x,y,z...)'] = final['Reference #'].apply(lambda x: df_i_map.get(normalizar_sku(pd.Series(x)).iloc[0], ""))
                     
                     for col in ['Condition', 'Available online only (0 = No, 1 = Yes)', 'Out of stock', 'ID / Name of shop', 'Warehouse']:
                         final[col] = "new" if "Condition" in col else ("1" if "Available" in col else "0")
                     
                     st.session_state.df_final_generado = final.applymap(limpiar_texto_excel)
-                    st.success("✅ Fichero Excel generado correctamente (Soporte XLSX para imágenes activo).")
+                    st.success("✅ Fichero Excel generado correctamente (Incluye 'Solo MAIN').")
                 except Exception as e: st.error(f"Error: {e}")
 
         if st.session_state.df_final_generado is not None:
