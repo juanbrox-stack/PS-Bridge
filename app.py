@@ -7,35 +7,45 @@ from datetime import datetime
 st.set_page_config(page_title="Turaco PS Helper PRO", page_icon="🐦", layout="wide")
 
 def limpiar_texto_excel(texto):
-    """Limpia caracteres que podrían causar errores visuales."""
     if pd.isna(texto): return ""
     return str(texto).replace('\n', ' ').replace('\r', ' ').strip()
 
 def normalizar_sku(serie):
-    """Limpia espacios y ceros iniciales para cruces precisos."""
     return serie.astype(str).str.strip().str.upper().str.lstrip('0')
 
 def buscar_columna(df, palabras_clave):
-    """Busca una columna de forma flexible."""
     for col in df.columns:
         if any(palabra in str(col).lower() for palabra in palabras_clave):
             return col
     return None
 
 def truncar_texto(texto, limite):
-    """Recorte inteligente sin romper palabras."""
     texto = limpiar_texto_excel(texto)
     if len(texto) <= limite: return texto
     recorte = texto[:limite]
     punto_corte = max(recorte.rfind('.'), recorte.rfind(' '))
     return recorte[:punto_corte].strip() if punto_corte != -1 else recorte
 
-# Persistencia de estados
-if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
-if 'df_previa' not in st.session_state: st.session_state.df_previa = None
-if 'df_final_generado' not in st.session_state: st.session_state.df_final_generado = None
+# --- INTERFAZ Y ANOTACIÓN ---
+st.title("🐦 Turaco PrestaShop Assistant - v4.4")
+st.markdown("""
+> **📌 Nota importante:** Para un funcionamiento óptimo, asegúrate de que los ficheros de **Imágenes** y **Categorías** estén en formato **Excel (.xlsx)**. 
+> Esto evita duplicados de URLs y roturas de filas.
+""")
 
-st.title("🐦 Turaco PrestaShop Assistant - v4.3")
+# --- GUÍA DE COLUMNAS (EXPANDIBLE) ---
+with st.expander("📋 Guía de Columnas Requeridas"):
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.info("**1. Keepa (XLSX)**")
+        st.write("- `ASIN` (Identificador)\n- `Título` (Nombre producto)\n- `Subcategoría` (Para mapeo)\n- `EAN` (Código de barras)")
+    with c2:
+        st.info("**2. Imágenes (XLSX)**")
+        st.write("- `Reference` / `SKU` (Cruce)\n- `Columna 2...N` (URLs de imágenes directas)")
+    with c3:
+        st.info("**3. Otros Ficheros**")
+        st.write("- **Plan:** `SKU`, `Estado`, `Notas`\n- **Amazon:** `Seller-SKU`, `ASIN1`\n- **Mapeo:** `Amazon`, `Prestashop`")
+
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar y Auditar", "📦 FASE 2: Generar Carga Final"])
 
 # --- FASE 1: IDENTIFICAR ---
@@ -52,21 +62,13 @@ with tab1:
                 df_ps = pd.read_csv(f_ps, sep=None, engine='python', dtype=str) if f_ps.name.endswith('.csv') else pd.read_excel(f_ps, dtype=str)
                 df_amz = pd.read_excel(f_amz, dtype=str) if f_amz.name.endswith('.xlsx') else pd.read_csv(f_amz, sep='\t', encoding='latin1', dtype=str)
                 df_plan = pd.read_excel(f_plan, dtype=str)
-                
                 for d in [df_ps, df_amz, df_plan]: d.columns = d.columns.str.lower().str.strip()
-                
                 df_ps['sku_norm'] = normalizar_sku(df_ps['reference'])
                 df_amz['sku_norm'] = normalizar_sku(df_amz['seller-sku'])
                 df_plan['sku_norm'] = normalizar_sku(df_plan['sku'])
                 
-                # NUEVA CONDICIÓN: Se incluye 'Solo MAIN'
-                estados_validos = [
-                    "Lanzamiento Completo", 
-                    "Carrusel Enriquecidas", 
-                    "Completo con Texto", 
-                    "Fotos Rodaje SIN texto",
-                    "Solo MAIN"
-                ]
+                # Estados incluyendo 'Solo MAIN'
+                estados_validos = ["Lanzamiento Completo", "Carrusel Enriquecidas", "Completo con Texto", "Fotos Rodaje SIN texto", "Solo MAIN"]
                 
                 df_nov = df_amz[~df_amz['sku_norm'].isin(df_ps['sku_norm'].unique())]
                 df_final = pd.merge(df_nov, df_plan[df_plan['estado'].isin(estados_validos)][['sku_norm', 'notas']], on='sku_norm', how='inner')
@@ -85,7 +87,7 @@ with tab1:
         df_editado = st.data_editor(st.session_state.df_previa, hide_index=True, use_container_width=True)
         if st.button("✅ Confirmar Selección"):
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
-            st.success("Registros guardados. Pasa a la Fase 2.")
+            st.success("Registros guardados.")
 
 # --- FASE 2: GENERADOR ---
 with tab2:
@@ -106,7 +108,6 @@ with tab2:
                     df_i = pd.read_excel(f_img, dtype=str)
                     df_c = pd.read_excel(f_cats, dtype=str)
                     df_l = st.session_state.df_revisado
-                    
                     for d in [df_k, df_i, df_c]: d.columns = d.columns.str.lower().str.strip()
 
                     c_asin_k = buscar_columna(df_k, ['asin'])
@@ -117,7 +118,6 @@ with tab2:
                     
                     df_m = pd.merge(df_l, df_k, left_on=c_asin_l, right_on=c_asin_k, how='inner')
 
-                    # --- CONSTRUCCIÓN DE COLUMNAS ---
                     final = pd.DataFrame()
                     final['Product ID'] = range(900001, 900001 + len(df_m))
                     final['Active (0/1)'] = "1"
@@ -138,17 +138,13 @@ with tab2:
                     
                     cols_car = [c for c in df_m.columns if 'característica' in str(c)]
                     final['Description'] = df_m[cols_car].fillna('').agg(' '.join, axis=1).apply(lambda x: truncar_texto(x, 2000))
-
                     final['Text when in stock'] = "In Stock"; final['Available for order (0 = No, 1 = Yes)'] = "1"; final['Show price (0 = No, 1 = Yes)'] = "1"
 
-                    # --- LÓGICA DE IMÁGENES (MAPEO XLSX) ---
+                    # IMÁGENES
                     c_ref_i = buscar_columna(df_i, ['reference', 'sku'])
                     df_i[c_ref_i] = normalizar_sku(df_i[c_ref_i])
-                    
                     cols_url = [c for c in df_i.columns if c != c_ref_i]
                     df_i['urls_tmp'] = df_i[cols_url].fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
-                    
-                    # Filtro de duplicados estricto
                     df_i_map = df_i.drop_duplicates(subset=[c_ref_i]).set_index(c_ref_i)['urls_tmp'].to_dict()
                     final['Image URLs (x,y,z...)'] = final['Reference #'].apply(lambda x: df_i_map.get(normalizar_sku(pd.Series(x)).iloc[0], ""))
                     
@@ -156,21 +152,14 @@ with tab2:
                         final[col] = "new" if "Condition" in col else ("1" if "Available" in col else "0")
                     
                     st.session_state.df_final_generado = final.applymap(limpiar_texto_excel)
-                    st.success("✅ Fichero Excel generado correctamente (Incluye 'Solo MAIN').")
+                    st.success("✅ Fichero Excel generado correctamente.")
                 except Exception as e: st.error(f"Error: {e}")
 
         if st.session_state.df_final_generado is not None:
             st.divider()
             st.subheader("👀 Previsualización")
             st.dataframe(st.session_state.df_final_generado, use_container_width=True)
-            
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 st.session_state.df_final_generado.to_excel(writer, index=False)
-            
-            st.download_button(
-                label="⬇️ Descargar Excel Final",
-                data=output.getvalue(),
-                file_name=f"{datetime.now().strftime('%Y%m%d')}_Novedades.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            st.download_button("⬇️ Descargar Excel Final", output.getvalue(), f"{datetime.now().strftime('%Y%m%d')}_Novedades.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
