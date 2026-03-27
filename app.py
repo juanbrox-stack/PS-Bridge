@@ -31,15 +31,11 @@ def truncar_texto(texto, limite):
     punto_corte = max(recorte.rfind('.'), recorte.rfind(' '))
     return recorte[:punto_corte].strip() if punto_corte != -1 else recorte
 
-st.title("🐦 Turaco PrestaShop Assistant - v4.9")
-
-# --- GUÍA VISUAL ---
-with st.expander("📋 Estructura Keepa Requerida"):
-    st.write("1. **ASIN** | 2. **Modelo** (SKU) | 3. **Título** | 4. **Subcategoría** | 5-9. **Características** | 10. **EAN**")
+st.title("🐦 Turaco PrestaShop Assistant - v4.11")
 
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar", "📦 FASE 2: Generar"])
 
-# --- FASE 1 ---
+# --- FASE 1: IDENTIFICAR ---
 with tab1:
     st.header("Auditoría de Novedades")
     c1, c2, c3 = st.columns(3)
@@ -68,25 +64,25 @@ with tab1:
                     col_asin_orig = buscar_columna(df_final, ['asin'])
                     col_name_orig = buscar_columna(df_final, ['item-name', 'title'])
                     
-                    # Forzamos nombres de columnas para evitar el KeyError posterior
                     df_viz = df_final[['sku_norm', col_name_orig, col_asin_orig, 'notas']].copy()
                     df_viz.columns = ['SKU', 'item-name', 'ASIN', 'notas'] 
+                    df_viz['ASIN'] = df_viz['ASIN'].str.strip().str.upper()
                     df_viz.insert(0, "Seleccionado", True)
                     st.session_state.df_previa = df_viz
-                else: st.warning("Sin novedades.")
+                else: st.warning("No hay novedades.")
             except Exception as e: st.error(f"Error Fase 1: {e}")
 
     if st.session_state.df_previa is not None:
         df_editado = st.data_editor(st.session_state.df_previa, hide_index=True)
-        if st.button("✅ Confirmar"):
+        if st.button("✅ Confirmar Selección"):
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
-            st.success("Cruce confirmado.")
+            st.success(f"Confirmados {len(st.session_state.df_revisado)} productos.")
 
-# --- FASE 2 ---
+# --- FASE 2: GENERADOR ---
 with tab2:
     st.header("Generador Final")
-    if st.session_state.df_revisado is None:
-        st.info("⚠️ Completa la Fase 1.")
+    if st.session_state.df_revisado is None or st.session_state.df_revisado.empty:
+        st.info("⚠️ Selecciona productos en la Fase 1.")
     else:
         c1, c2 = st.columns(2)
         with c1: f_keepa = st.file_uploader("1. Keepa (XLSX)", type=['xlsx'])
@@ -95,24 +91,35 @@ with tab2:
             f_cats = st.file_uploader("3. Mapeo Categorías (XLSX)", type=['xlsx'])
 
         if all([f_keepa, f_img, f_cats]):
-            if st.button("🪄 Generar Excel"):
+            if st.button("🪄 Generar Excel Final"):
                 try:
                     df_k = pd.read_excel(f_keepa, dtype=str)
                     df_i = pd.read_excel(f_img, dtype=str)
                     df_c = pd.read_excel(f_cats, dtype=str)
                     for d in [df_k, df_i, df_c]: d.columns = d.columns.str.lower().str.strip()
 
-                    # Buscamos el ASIN en Keepa dinámicamente
-                    c_asin_keepa = buscar_columna(df_k, ['asin'])
+                    c_asin_k = buscar_columna(df_k, ['asin'])
+                    df_k[c_asin_k] = df_k[c_asin_k].str.strip().str.upper()
                     
-                    # Aseguramos que el cruce use la columna 'ASIN' que forzamos en la Fase 1
-                    df_m = pd.merge(st.session_state.df_revisado, df_k.drop_duplicates(subset=[c_asin_keepa]), left_on='ASIN', right_on=c_asin_keepa, how='inner')
+                    # --- CRUCE TOLERANTE (INNER JOIN) ---
+                    # Al ser 'inner', pandas elimina automáticamente las filas que no coinciden en ambas tablas
+                    df_m = pd.merge(st.session_state.df_revisado, df_k.drop_duplicates(subset=[c_asin_k]), on='ASIN', how='inner')
 
                     if df_m.empty:
-                        st.error("No se han encontrado coincidencias entre tu selección y el fichero de Keepa (revisa los ASINs).")
+                        st.error("❌ Ninguno de los ASINs seleccionados se encuentra en el archivo de Keepa.")
                     else:
+                        # Reporte de ASINs saltados
+                        encontrados = set(df_m['ASIN'])
+                        buscados = set(st.session_state.df_revisado['ASIN'])
+                        faltantes = buscados - encontrados
+                        
+                        if faltantes:
+                            st.warning(f"⚠️ Se han ignorado {len(faltantes)} ASINs no encontrados en Keepa.")
+                            with st.expander("Ver ASINs no encontrados"):
+                                st.write(list(faltantes))
+
                         final = pd.DataFrame()
-                        final['Product ID'] = range(900001, 900001 + len(df_m))
+                        final['Product ID'] = range(900001, 900002 + len(df_m))
                         final['Active (0/1)'] = "1"
                         final['Name *'] = df_m[buscar_columna(df_k, ['título', 'title'])].apply(lambda x: truncar_texto(x, 128))
                         
@@ -137,8 +144,7 @@ with tab2:
                             final[c] = v
 
                         st.session_state.df_final_generado = final.applymap(limpiar_texto_excel)
-                        st.success("✅ Generado con éxito.")
-                except Exception as e: st.error(f"Error en Generador: {e}")
+                        st.success(f"✅ Archivo generado con {len(final)} productos de {len(buscados)} solicitados.")
 
         if st.session_state.df_final_generado is not None:
             st.divider()
