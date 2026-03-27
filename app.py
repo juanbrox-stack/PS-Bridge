@@ -75,7 +75,7 @@ with tab1:
         df_editado = st.data_editor(st.session_state.df_previa, hide_index=True)
         if st.button("✅ Confirmar Selección"):
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
-            st.success(f"Confirmados {len(st.session_state.df_revisado)} productos.")
+            st.success(f"Confirmados {len(st.session_state.df_revisado)} productos. Pasa a la Fase 2 arriba")
 
 # --- FASE 2: GENERADOR ---
 with tab2:
