@@ -8,6 +8,7 @@ st.set_page_config(page_title="Turaco PS Helper PRO", page_icon="🐦", layout="
 
 def limpiar_texto(texto):
     if pd.isna(texto): return ""
+    # Eliminamos saltos de línea para evitar que rompan celdas en Excel/CSV
     return str(texto).replace('\n', ' ').replace('\r', ' ').strip()
 
 def normalizar_sku(serie):
@@ -21,11 +22,12 @@ def truncar_texto(texto, limite):
     return recorte[:punto_corte].strip() if punto_corte != -1 else recorte
 
 # Persistencia de estados
-for key in ['df_revisado', 'df_previa', 'df_final_generado']:
-    if key not in st.session_state: st.session_state[key] = None
+if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
+if 'df_previa' not in st.session_state: st.session_state.df_previa = None
+if 'df_final_generado' not in st.session_state: st.session_state.df_final_generado = None
 
-st.title("🐦 Turaco PrestaShop Assistant - v4.24")
-tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar", "📦 FASE 2: Generar CSV"])
+st.title("🐦 Turaco PrestaShop Assistant - v4.25")
+tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar", "📦 FASE 2: Generar EXCEL"])
 
 # --- FASE 1: IDENTIFICACIÓN ---
 with tab1:
@@ -81,7 +83,7 @@ with tab2:
         with c3: f_cats = st.file_uploader("3. Mapeo Categorías (XLSX)", type=['xlsx'])
 
         if all([f_keepa, f_img, f_cats]):
-            if st.button("🪄 Generar CSV PrestaShop"):
+            if st.button("🪄 Generar Estructura Excel"):
                 try:
                     df_k = pd.read_excel(f_keepa, dtype=str)
                     df_i = pd.read_excel(f_img, dtype=str)
@@ -92,9 +94,10 @@ with tab2:
                                     left_on='ASIN_FINAL', right_on='KEY_JOIN', how='inner')
 
                     if df_m.empty:
-                        st.error("No hay coincidencia de ASINs.")
+                        st.error("No hay coincidencia de ASINs con el fichero Keepa.")
                     else:
                         final = pd.DataFrame()
+                        # Generamos IDs altos para evitar conflictos
                         final['Product ID'] = range(900001, 900001 + len(df_m))
                         final['Active (0/1)'] = "1"
                         final['Name *'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[2])].apply(lambda x: truncar_texto(x, 128))
@@ -102,11 +105,12 @@ with tab2:
                         mapeo_cat = pd.Series(df_c.iloc[:,1].values, index=df_c.iloc[:,0].str.lower().str.strip()).to_dict()
                         final['Categories (x,y,z...)'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[3])].apply(lambda x: mapeo_cat.get(str(x).lower().strip(), x))
                         
-                        final['Price tax included'] = "999"; final['Tax rules ID'] = "1"
+                        final['Price tax included'] = "999"
+                        final['Tax rules ID'] = "1"
                         final['Wholesale price'] = ""
                         
-                        # AJUSTE: On sale desactivado (0)
-                        final['On sale (0/1)'] = "0"
+                        # CAMBIO SOLICITADO: On sale (0/1) = 1
+                        final['On sale (0/1)'] = "1"
                         
                         final['Discount amount'] = ""; final['Discount percent'] = ""
                         final['Discount from (yyyy-mm-dd)'] = ""; final['Discount to (yyyy-mm-dd)'] = ""
@@ -132,6 +136,7 @@ with tab2:
                         final['Product available date'] = ""; final['Product creation date'] = ""
                         final['Show price (0 = No, 1 = Yes)'] = "1"
                         
+                        # Lógica de Imágenes
                         col_ref_i = next((c for c in df_i.columns if 'reference' in c.lower() or 'sku' in c.lower()), df_i.columns[0])
                         df_i['urls_merged'] = df_i.iloc[:, 1:].fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
                         img_dict = pd.Series(df_i['urls_merged'].values, index=normalizar_sku(df_i[col_ref_i])).to_dict()
@@ -144,14 +149,28 @@ with tab2:
                         final['Out of stock'] = "0"; final['ID / Name of shop'] = "0"
                         final['Advanced stock management'] = "0"; final['Depends On Stock'] = "0"; final['Warehouse'] = "0"
 
-                        st.session_state.df_final_generado = final.applymap(limpiar_texto)
-                        st.success(f"✅ CSV actualizado: 'On sale' = 0.")
+                        # Aplicar limpieza final a todas las celdas
+                        st.session_state.df_final_generado = final.map(limpiar_texto)
+                        st.success(f"✅ Excel listo para descargar. 'On sale' configurado a 1.")
 
-                except Exception as e: st.error(f"Error: {e}")
+                except Exception as e: st.error(f"Error en Generación: {e}")
 
+# --- DESCARGA FINAL ---
 if st.session_state.df_final_generado is not None:
     st.divider()
     st.dataframe(st.session_state.df_final_generado, use_container_width=True)
-    csv_buf = io.StringIO()
-    st.session_state.df_final_generado.to_csv(csv_buf, index=False, sep=',', encoding='utf-8')
-    st.download_button(label="⬇️ Descargar CSV", data=csv_buf.getvalue(), file_name=f"Carga_PS_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
+    
+    # Preparamos el buffer para Excel
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        st.session_state.df_final_generado.to_excel(writer, index=False, sheet_name='Importar_PS')
+        # No cerramos manualmente, el contexto 'with' lo hace
+    
+    excel_data = output.getvalue()
+    
+    st.download_button(
+        label="⬇️ Descargar EXCEL para PrestaShop", 
+        data=excel_data, 
+        file_name=f"Carga_PS_{datetime.now().strftime('%Y%m%d')}.xlsx", 
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
