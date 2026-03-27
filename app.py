@@ -31,7 +31,7 @@ def truncar_texto(texto, limite):
     punto_corte = max(recorte.rfind('.'), recorte.rfind(' '))
     return recorte[:punto_corte].strip() if punto_corte != -1 else recorte
 
-st.title("🐦 Turaco PrestaShop Assistant - v4.11")
+st.title("🐦 Turaco PrestaShop Assistant - v4.12")
 
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar", "📦 FASE 2: Generar"])
 
@@ -63,7 +63,6 @@ with tab1:
                 if not df_final.empty:
                     col_asin_orig = buscar_columna(df_final, ['asin'])
                     col_name_orig = buscar_columna(df_final, ['item-name', 'title'])
-                    
                     df_viz = df_final[['sku_norm', col_name_orig, col_asin_orig, 'notas']].copy()
                     df_viz.columns = ['SKU', 'item-name', 'ASIN', 'notas'] 
                     df_viz['ASIN'] = df_viz['ASIN'].str.strip().str.upper()
@@ -101,25 +100,20 @@ with tab2:
                     c_asin_k = buscar_columna(df_k, ['asin'])
                     df_k[c_asin_k] = df_k[c_asin_k].str.strip().str.upper()
                     
-                    # --- CRUCE TOLERANTE (INNER JOIN) ---
-                    # Al ser 'inner', pandas elimina automáticamente las filas que no coinciden en ambas tablas
+                    # Merge tolerable (elimina ASINs no encontrados en Keepa automáticamente)
                     df_m = pd.merge(st.session_state.df_revisado, df_k.drop_duplicates(subset=[c_asin_k]), on='ASIN', how='inner')
 
                     if df_m.empty:
-                        st.error("❌ Ninguno de los ASINs seleccionados se encuentra en el archivo de Keepa.")
+                        st.error("❌ Ninguno de los ASINs seleccionados está en Keepa.")
                     else:
-                        # Reporte de ASINs saltados
-                        encontrados = set(df_m['ASIN'])
+                        # Informe de ASINs perdidos
                         buscados = set(st.session_state.df_revisado['ASIN'])
+                        encontrados = set(df_m['ASIN'])
                         faltantes = buscados - encontrados
-                        
-                        if faltantes:
-                            st.warning(f"⚠️ Se han ignorado {len(faltantes)} ASINs no encontrados en Keepa.")
-                            with st.expander("Ver ASINs no encontrados"):
-                                st.write(list(faltantes))
+                        if faltantes: st.warning(f"Ignorados {len(faltantes)} ASINs no encontrados en Keepa.")
 
                         final = pd.DataFrame()
-                        final['Product ID'] = range(900001, 900002 + len(df_m))
+                        final['Product ID'] = range(900001, 900001 + len(df_m))
                         final['Active (0/1)'] = "1"
                         final['Name *'] = df_m[buscar_columna(df_k, ['título', 'title'])].apply(lambda x: truncar_texto(x, 128))
                         
@@ -129,10 +123,12 @@ with tab2:
                         final['Reference #'] = df_m['SKU']
                         final['EAN13'] = df_m[buscar_columna(df_k, ['ean', 'códigos'])].apply(limpiar_texto_excel)
                         
+                        # Descripción 5 a 1
                         cols_car = [c for c in df_m.columns if 'característica' in str(c)]
                         cols_car.sort(reverse=True) 
                         final['Description'] = df_m[cols_car].fillna('').agg('. '.join, axis=1).apply(lambda x: truncar_texto(x, 2000)) if cols_car else ""
                         
+                        # Imágenes
                         c_ref_i = buscar_columna(df_i, ['reference', 'sku'])
                         df_i[c_ref_i] = normalizar_sku(df_i[c_ref_i])
                         cols_url = [c for c in df_i.columns if c != c_ref_i]
@@ -144,8 +140,11 @@ with tab2:
                             final[c] = v
 
                         st.session_state.df_final_generado = final.applymap(limpiar_texto_excel)
-                        st.success(f"✅ Archivo generado con {len(final)} productos de {len(buscados)} solicitados.")
+                        st.success(f"✅ Generado con {len(final)} productos.")
+                except Exception as e:
+                    st.error(f"Error crítico en el generador: {e}")
 
+        # --- PREVISUALIZACIÓN Y DESCARGA (FUERA DEL TRY/EXCEPT) ---
         if st.session_state.df_final_generado is not None:
             st.divider()
             st.dataframe(st.session_state.df_final_generado, use_container_width=True)
