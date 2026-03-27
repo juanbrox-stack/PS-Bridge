@@ -24,7 +24,7 @@ def truncar_texto(texto, limite):
 for key in ['df_revisado', 'df_previa', 'df_final_generado']:
     if key not in st.session_state: st.session_state[key] = None
 
-st.title("🐦 Turaco PrestaShop Assistant - v4.22")
+st.title("🐦 Turaco PrestaShop Assistant - v4.24")
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar", "📦 FASE 2: Generar CSV"])
 
 # --- FASE 1: IDENTIFICACIÓN ---
@@ -87,7 +87,6 @@ with tab2:
                     df_i = pd.read_excel(f_img, dtype=str)
                     df_c = pd.read_excel(f_cats, dtype=str)
 
-                    # KEY JOIN: Columna A de Keepa (ASIN)
                     df_k['KEY_JOIN'] = df_k.iloc[:, 0].str.strip().str.upper()
                     df_m = pd.merge(st.session_state.df_revisado, df_k.drop_duplicates(subset=['KEY_JOIN']), 
                                     left_on='ASIN_FINAL', right_on='KEY_JOIN', how='inner')
@@ -95,103 +94,64 @@ with tab2:
                     if df_m.empty:
                         st.error("No hay coincidencia de ASINs.")
                     else:
-                        # CREACIÓN DEL DATAFRAME CON LAS 60 COLUMNAS EXACTAS
                         final = pd.DataFrame()
-                        
-                        # A, B, C
                         final['Product ID'] = range(900001, 900001 + len(df_m))
                         final['Active (0/1)'] = "1"
                         final['Name *'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[2])].apply(lambda x: truncar_texto(x, 128))
                         
-                        # D: Categories (x,y,z...) -> Toma Col D de Keepa y aplica mapeo
                         mapeo_cat = pd.Series(df_c.iloc[:,1].values, index=df_c.iloc[:,0].str.lower().str.strip()).to_dict()
                         final['Categories (x,y,z...)'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[3])].apply(lambda x: mapeo_cat.get(str(x).lower().strip(), x))
                         
-                        # E, F, G, H, I, J, K, L
-                        final['Price tax included'] = "999"
-                        final['Tax rules ID'] = "1"
+                        final['Price tax included'] = "999"; final['Tax rules ID'] = "1"
                         final['Wholesale price'] = ""
-                        final['On sale (0/1)'] = "1"
-                        final['Discount amount'] = ""
-                        final['Discount percent'] = ""
-                        final['Discount from (yyyy-mm-dd)'] = ""
-                        final['Discount to (yyyy-mm-dd)'] = ""
                         
-                        # M, N, O, P
+                        # AJUSTE: On sale desactivado (0)
+                        final['On sale (0/1)'] = "0"
+                        
+                        final['Discount amount'] = ""; final['Discount percent'] = ""
+                        final['Discount from (yyyy-mm-dd)'] = ""; final['Discount to (yyyy-mm-dd)'] = ""
                         final['Reference #'] = df_m['SKU_FINAL']
                         final['Supplier reference #'] = df_m['SKU_FINAL']
-                        final['Supplier'] = "Cecotec"
-                        final['Manufacturer'] = "Cecotec"
+                        final['Supplier'] = "Cecotec"; final['Manufacturer'] = "Cecotec"
                         
-                        # Q: EAN13 -> Columna J de Keepa (Índice 9)
                         final['EAN13'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[9])].apply(limpiar_texto)
-                        
-                        # R a X
-                        final['UPC'] = ""
-                        final['Ecotax'] = ""
-                        final['Width'] = "1"; final['Height'] = "1"; final['Depth'] = "1"; final['Weight'] = "1"
-                        final['Quantity'] = "0"
-                        
-                        # Y a AG
-                        final['Minimal quantity'] = "1"
+                        final['UPC'] = ""; final['Ecotax'] = ""
+                        for col in ['Width', 'Height', 'Depth', 'Weight']: final[col] = "1"
+                        final['Quantity'] = "0"; final['Minimal quantity'] = "1"
                         final['Low stock level'] = ""; final['Visibility'] = ""
                         final['Additional shipping cost'] = ""; final['Unity'] = ""; final['Unit price'] = ""
                         final['Short description'] = ""
                         
-                        # AH: Description -> Concatenación Columnas E, F, G, H, I de Keepa (Índices 4 a 8)
                         cols_desc_keepa = df_k.columns[4:9] 
                         final['Description'] = df_m[cols_desc_keepa].fillna('').agg('. '.join, axis=1).apply(lambda x: truncar_texto(x, 2000))
                         
-                        # AI a AR
-                        final['Tags (x,y,z...)'] = ""
-                        final['Meta title'] = ""; final['Meta keywords'] = ""; final['Meta description'] = ""
-                        final['URL rewritten'] = ""
-                        final['Text when in stock'] = "In Stock"
-                        final['Text when backorder allowed'] = ""
+                        final['Tags (x,y,z...)'] = ""; final['Meta title'] = ""; final['Meta keywords'] = ""
+                        final['Meta description'] = ""; final['URL rewritten'] = ""
+                        final['Text when in stock'] = "In Stock"; final['Text when backorder allowed'] = ""
                         final['Available for order (0 = No, 1 = Yes)'] = "1"
                         final['Product available date'] = ""; final['Product creation date'] = ""
-                        
-                        # AS: Show Price
                         final['Show price (0 = No, 1 = Yes)'] = "1"
                         
-                        # AT: Image URLs -> Columna S pestaña Imágenes (o búsqueda por SKU)
                         col_ref_i = next((c for c in df_i.columns if 'reference' in c.lower() or 'sku' in c.lower()), df_i.columns[0])
                         df_i['urls_merged'] = df_i.iloc[:, 1:].fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
                         img_dict = pd.Series(df_i['urls_merged'].values, index=normalizar_sku(df_i[col_ref_i])).to_dict()
                         final['Image URLs (x,y,z...)'] = final['Reference #'].apply(lambda x: img_dict.get(x, ""))
                         
-                        # AU a BH (Final)
-                        final['Image alt texts (x,y,z...)'] = ""
-                        final['Delete existing images (0 = No, 1 = Yes)'] = "0"
-                        final['Feature(Name:Value:Position)'] = ""
-                        final['Available online only (0 = No, 1 = Yes)'] = "1"
-                        final['Condition'] = "New"
-                        final['Customizable (0 = No, 1 = Yes)'] = "0"
-                        final['Uploadable files (0 = No, 1 = Yes)'] = "0"
-                        final['Text fields (0 = No, 1 = Yes)'] = "0"
-                        final['Out of stock'] = "0"
-                        final['ID / Name of shop'] = "0"
-                        final['Advanced stock management'] = "0"
-                        final['Depends On Stock'] = "0"
-                        final['Warehouse'] = "0"
+                        final['Image alt texts (x,y,z...)'] = ""; final['Delete existing images (0 = No, 1 = Yes)'] = "0"
+                        final['Feature(Name:Value:Position)'] = ""; final['Available online only (0 = No, 1 = Yes)'] = "1"
+                        final['Condition'] = "new"; final['Customizable (0 = No, 1 = Yes)'] = "0"
+                        final['Uploadable files (0 = No, 1 = Yes)'] = "0"; final['Text fields (0 = No, 1 = Yes)'] = "0"
+                        final['Out of stock'] = "0"; final['ID / Name of shop'] = "0"
+                        final['Advanced stock management'] = "0"; final['Depends On Stock'] = "0"; final['Warehouse'] = "0"
 
                         st.session_state.df_final_generado = final.applymap(limpiar_texto)
-                        st.success(f"✅ ¡Estructura PrestaShop completada! {len(final)} productos listos.")
+                        st.success(f"✅ CSV actualizado: 'On sale' = 0.")
 
-                except Exception as e: st.error(f"Error técnico: {e}")
+                except Exception as e: st.error(f"Error: {e}")
 
 if st.session_state.df_final_generado is not None:
     st.divider()
-    st.subheader("📊 Previsualización del CSV")
     st.dataframe(st.session_state.df_final_generado, use_container_width=True)
-    
     csv_buf = io.StringIO()
-    # Exportación cumpliendo UTF-8 y Delimitador Coma
     st.session_state.df_final_generado.to_csv(csv_buf, index=False, sep=',', encoding='utf-8')
-    
-    st.download_button(
-        label="⬇️ Descargar CSV para Importación",
-        data=csv_buf.getvalue(),
-        file_name=f"Carga_PrestaShop_{datetime.now().strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
+    st.download_button(label="⬇️ Descargar CSV", data=csv_buf.getvalue(), file_name=f"Carga_PS_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
