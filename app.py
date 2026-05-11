@@ -21,7 +21,6 @@ def truncar_texto(texto, limite):
     return recorte[:punto_corte].strip() if punto_corte != -1 else recorte
 
 def obtener_columna(df, palabras_clave, indice_fallback):
-    """Busca por nombre; si falla, devuelve el índice fallback."""
     for col in df.columns:
         if any(p in str(col).lower() for p in palabras_clave):
             return col
@@ -31,7 +30,7 @@ def obtener_columna(df, palabras_clave, indice_fallback):
 for key in ['df_revisado', 'df_previa', 'df_final_generado']:
     if key not in st.session_state: st.session_state[key] = None
 
-st.title("🐦 Turaco PrestaShop Assistant - v4.29")
+st.title("🐦 Turaco PrestaShop Assistant - v4.31")
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar", "📦 FASE 2: Generar Excel"])
 
 # --- FASE 1: IDENTIFICACIÓN ---
@@ -43,65 +42,66 @@ with tab1:
     with c3: f_plan = st.file_uploader("3. Plan Lanzamiento", type=['xlsx'])
 
     if all([f_ps, f_amz, f_plan]):
-        if st.button("🚀 Iniciar Cruce con Filtros"):
+        if st.button("🚀 Iniciar Cruce"):
             try:
-                # Carga y normalización de cabeceras
                 df_ps = pd.read_csv(f_ps, sep=None, engine='python', dtype=str) if f_ps.name.endswith('.csv') else pd.read_excel(f_ps, dtype=str)
                 df_amz = pd.read_excel(f_amz, dtype=str) if f_amz.name.endswith('.xlsx') else pd.read_csv(f_amz, sep='\t', encoding='latin1', dtype=str)
                 df_plan = pd.read_excel(f_plan, dtype=str)
                 
-                df_ps.columns = df_ps.columns.str.lower().str.strip()
-                df_amz.columns = df_amz.columns.str.lower().str.strip()
-                df_plan.columns = df_plan.columns.str.lower().str.strip()
+                for d in [df_ps, df_amz, df_plan]: d.columns = d.columns.str.lower().str.strip()
 
-                # Identificación con Fallback (Evita el error 'None')
+                # Identificación de columnas
                 col_ref_ps = obtener_columna(df_ps, ['reference'], 0)
                 col_sku_amz = obtener_columna(df_amz, ['seller-sku', 'sku'], 0)
-                col_asin_amz = obtener_columna(df_amz, ['asin'], 2)
+                col_asin_amz = obtener_columna(df_amz, ['asin1', 'asin'], 2)
                 col_name_amz = obtener_columna(df_amz, ['item-name', 'title'], 1)
                 
                 col_sku_plan = obtener_columna(df_plan, ['sku'], 0)
                 col_est_plan = obtener_columna(df_plan, ['estado'], 1)
-                col_clu_plan = obtener_columna(df_plan, ['cluster'], 3) # Asumiendo posición tras SKU/Estado/Notas
+                col_clu_plan = obtener_columna(df_plan, ['cluster'], 3)
                 col_not_plan = obtener_columna(df_plan, ['notas'], 2)
 
                 df_ps['sku_norm'] = normalizar_sku(df_ps[col_ref_ps])
                 df_amz['sku_norm'] = normalizar_sku(df_amz[col_sku_amz])
                 df_plan['sku_norm'] = normalizar_sku(df_plan[col_sku_plan])
 
-                # Filtros Plan: Estados válidos (incluyendo Solo MAIN), Cluster != A, Notas vacías
+                # LÓGICA DE FILTRADO ACTUALIZADA 
+                # 1. Estados permitidos
                 estados_ok = ["Lanzamiento Completo", "Carrusel Enriquecidas", "Completo con Texto", "Fotos Rodaje SIN texto", "Solo MAIN"]
-                mask = (df_plan[col_est_plan].isin(estados_ok))
+                mask = df_plan[col_est_plan].isin(estados_ok)
+                
+                # 2. EXCLUIR Cluster A (Descarte estricto) 
                 mask &= (df_plan[col_clu_plan].astype(str).str.upper() != "A")
-                mask &= (df_plan[col_not_plan].isna() | (df_plan[col_not_plan].astype(str).str.strip() == ""))
+                
+                # 3. NOTAS INCLUSIVAS: Pasan tanto las vacías como las que tienen texto para evaluación 
 
                 df_plan_f = df_plan[mask]
                 df_nov = df_amz[~df_amz['sku_norm'].isin(df_ps['sku_norm'].unique())]
                 
-                df_final = pd.merge(df_nov, df_plan_f[['sku_norm']], on='sku_norm', how='inner')
+                # Cruce final con Plan de Lanzamiento
+                df_final = pd.merge(df_nov, df_plan_f[['sku_norm', col_not_plan]], on='sku_norm', how='inner')
                 
                 if not df_final.empty:
-                    df_viz = df_final[['sku_norm', col_name_amz, col_asin_amz]].copy()
-                    df_viz.columns = ['SKU_FINAL', 'TITULO_PROV', 'ASIN_FINAL']
+                    df_viz = df_final[['sku_norm', col_name_amz, col_asin_amz, col_not_plan]].copy()
+                    df_viz.columns = ['SKU_FINAL', 'TITULO_PROV', 'ASIN_FINAL', 'NOTAS_REVISION']
                     df_viz.insert(0, "Seleccionado", True)
                     st.session_state.df_previa = df_viz
                 else:
-                    st.warning("No hay productos que cumplan: Cluster != A, Notas vacías y No existentes en PS.")
+                    st.warning("No se encontraron novedades (excluidos Cluster A y productos ya en PS).")
             except Exception as e:
-                st.error(f"Error técnico en Fase 1: {e}")
+                st.error(f"Error técnico: {e}")
 
     if st.session_state.df_previa is not None:
+        st.subheader("📋 Revisión de Novedades (Cluster A excluido)")
         df_editado = st.data_editor(st.session_state.df_previa, hide_index=True, use_container_width=True)
         if st.button("✅ Confirmar Selección"):
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
-            st.success("Cruce guardado correctamente.")
+            st.success("Cruce confirmado.")
 
 # --- FASE 2: GENERADOR ---
 with tab2:
-    st.header("Generador Final")
-    if st.session_state.df_revisado is None:
-        st.info("⚠️ Completa la selección en la Fase 1.")
-    else:
+    st.header("Generador de Fichero Maestro")
+    if st.session_state.df_revisado is not None:
         c1, c2, c3 = st.columns(3)
         with c1: f_keepa = st.file_uploader("1. Keepa (XLSX)", type=['xlsx'])
         with c2: f_img = st.file_uploader("2. Imágenes (XLSX)", type=['xlsx'])
@@ -114,47 +114,46 @@ with tab2:
                     df_i = pd.read_excel(f_img, dtype=str)
                     df_c = pd.read_excel(f_cats, dtype=str)
 
-                    # Cruce Keepa (ASIN en Columna A)
+                    # KEY JOIN: Columna A de Keepa (ASIN) 
                     df_k['KEY_JOIN'] = df_k.iloc[:, 0].str.strip().str.upper()
                     df_m = pd.merge(st.session_state.df_revisado, df_k.drop_duplicates(subset=['KEY_JOIN']), 
                                     left_on='ASIN_FINAL', right_on='KEY_JOIN', how='inner')
 
                     if df_m.empty:
-                        st.error("No se encontraron los ASINs en el archivo Keepa.")
+                        st.error("No hay coincidencias con el ASIN de Keepa.")
                     else:
                         final = pd.DataFrame()
-                        # Estructura PrestaShop
+                        # Columnas estándar PrestaShop [cite: 25]
                         final['Product ID'] = range(900001, 900001 + len(df_m))
                         final['Active (0/1)'] = "1"
-                        final['Name *'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[2])].apply(lambda x: truncar_texto(x, 128))
+                        final['Name *'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[2])].apply(lambda x: truncar_texto(x, 128)) # Col C 
                         
                         mapeo_cat = pd.Series(df_c.iloc[:,1].values, index=df_c.iloc[:,0].str.lower().str.strip()).to_dict()
-                        final['Categories (x,y,z...)'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[3])].apply(lambda x: mapeo_cat.get(str(x).lower().strip(), x))
+                        final['Categories (x,y,z...)'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[3])].apply(lambda x: mapeo_cat.get(str(x).lower().strip(), x)) # Col D 
                         
                         final['Reference #'] = df_m['SKU_FINAL']
-                        final['EAN13'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[9])].apply(limpiar_texto)
+                        final['EAN13'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[9])].apply(limpiar_texto) # Col J 
                         
-                        # Descripción concatenada (E-I)
+                        # Descripción (Concatenación Col E-I) 
                         cols_desc = df_k.columns[4:9] 
                         final['Description'] = df_m[cols_desc].fillna('').agg('. '.join, axis=1).apply(lambda x: truncar_texto(x, 2000))
-                        
-                        # Imágenes
-                        col_ref_i = df_i.columns[0]
-                        df_i['urls_merged'] = df_i.iloc[:, 1:].fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
-                        img_dict = pd.Series(df_i['urls_merged'].values, index=normalizar_sku(df_i[col_ref_i])).to_dict()
-                        final['Image URLs (x,y,z...)'] = final['Reference #'].apply(lambda x: img_dict.get(x, ""))
                         
                         final['Condition'] = "new"; final['On sale (0/1)'] = "0"
                         final['Price tax included'] = "999"; final['Supplier'] = "Cecotec"; final['Manufacturer'] = "Cecotec"
                         final['Show price (0 = No, 1 = Yes)'] = "1"; final['Available for order (0 = No, 1 = Yes)'] = "1"
 
+                        # Imágenes [cite: 22]
+                        col_ref_i = df_i.columns[0]
+                        df_i['urls_merged'] = df_i.iloc[:, 1:].fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
+                        img_dict = pd.Series(df_i['urls_merged'].values, index=normalizar_sku(df_i[col_ref_i])).to_dict()
+                        final['Image URLs (x,y,z...)'] = final['Reference #'].apply(lambda x: img_dict.get(x, ""))
+
                         st.session_state.df_final_generado = final
-                        st.success(f"✅ Excel generado con {len(final)} productos.")
-                except Exception as e: st.error(f"Error en Fase 2: {e}")
+                        st.success("✅ Generado.")
+                except Exception as e: st.error(f"Fase 2: {e}")
 
 if st.session_state.df_final_generado is not None:
     st.divider()
-    st.dataframe(st.session_state.df_final_generado, use_container_width=True)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         st.session_state.df_final_generado.to_excel(writer, index=False)
