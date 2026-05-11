@@ -30,7 +30,7 @@ def obtener_columna(df, palabras_clave, indice_fallback):
 for key in ['df_revisado', 'df_previa', 'df_final_generado']:
     if key not in st.session_state: st.session_state[key] = None
 
-st.title("🐦 Turaco PrestaShop Assistant - v4.32")
+st.title("🐦 Turaco PrestaShop Assistant - v4.33")
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar", "📦 FASE 2: Generar Excel Maestro"])
 
 # --- FASE 1: IDENTIFICACIÓN ---
@@ -53,6 +53,7 @@ with tab1:
                 col_sku_amz = obtener_columna(df_amz, ['seller-sku', 'sku'], 0)
                 col_asin_amz = obtener_columna(df_amz, ['asin1', 'asin'], 2)
                 col_name_amz = obtener_columna(df_amz, ['item-name', 'title'], 1)
+                
                 col_sku_plan = obtener_columna(df_plan, ['sku'], 0)
                 col_est_plan = obtener_columna(df_plan, ['estado'], 1)
                 col_clu_plan = obtener_columna(df_plan, ['cluster'], 3)
@@ -62,7 +63,7 @@ with tab1:
                 df_amz['sku_norm'] = normalizar_sku(df_amz[col_sku_amz])
                 df_plan['sku_norm'] = normalizar_sku(df_plan[col_sku_plan])
 
-                # Filtro: Excluir Cluster A, mantener el resto (con o sin notas)
+                # FILTRO: Excluir Cluster A, mantener el resto con sus notas
                 estados_ok = ["Lanzamiento Completo", "Carrusel Enriquecidas", "Completo con Texto", "Fotos Rodaje SIN texto", "Solo MAIN"]
                 mask = (df_plan[col_est_plan].isin(estados_ok)) & (df_plan[col_clu_plan].astype(str).str.upper() != "A")
 
@@ -75,14 +76,14 @@ with tab1:
                     df_viz.columns = ['SKU_FINAL', 'TITULO_PROV', 'ASIN_FINAL', 'NOTAS_REVISION']
                     df_viz.insert(0, "Seleccionado", True)
                     st.session_state.df_previa = df_viz
-                else: st.warning("Sin novedades (excluidos Cluster A y existentes en PS).")
+                else: st.warning("Sin novedades disponibles.")
             except Exception as e: st.error(f"Fase 1: {e}")
 
     if st.session_state.df_previa is not None:
         df_editado = st.data_editor(st.session_state.df_previa, hide_index=True, use_container_width=True)
         if st.button("✅ Confirmar Selección"):
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
-            st.success("Cruce guardado.")
+            st.success("Selección confirmada.")
 
 # --- FASE 2: GENERADOR ---
 with tab2:
@@ -107,46 +108,43 @@ with tab2:
                     if df_m.empty: st.error("No hay coincidencias con Keepa.")
                     else:
                         final = pd.DataFrame()
-                        # A-C
+                        # Datos principales (A-D) [cite: 20]
                         final['Product ID'] = range(900001, 900001 + len(df_m))
                         final['Active (0/1)'] = "1"
                         final['Name *'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[2])].apply(lambda x: truncar_texto(x, 128))
-                        # D: Categories
                         mapeo_cat = pd.Series(df_c.iloc[:,1].values, index=df_c.iloc[:,0].str.lower().str.strip()).to_dict()
                         final['Categories (x,y,z...)'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[3])].apply(lambda x: mapeo_cat.get(str(x).lower().strip(), x))
                         
-                        # E-L
+                        # Precios y Descuentos (E-L) [cite: 25]
                         final['Price tax included'] = "999"; final['Tax rules ID'] = "1"; final['Wholesale price'] = ""
                         final['On sale (0/1)'] = "0"; final['Discount amount'] = ""; final['Discount percent'] = ""
                         final['Discount from (yyyy-mm-dd)'] = ""; final['Discount to (yyyy-mm-dd)'] = ""
                         
-                        # M-P
+                        # Referencias y Proveedor (M-P)
                         final['Reference #'] = df_m['SKU_FINAL']
                         final['Supplier reference #'] = df_m['SKU_FINAL']
                         final['Supplier'] = "Cecotec"; final['Manufacturer'] = "Cecotec"
                         
-                        # Q-X
+                        # EAN y Medidas (Q-X) [cite: 20]
                         final['EAN13'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[9])].apply(limpiar_texto)
                         final['UPC'] = ""; final['Ecotax'] = ""
                         for col in ['Width', 'Height', 'Depth', 'Weight']: final[col] = "1"
                         final['Quantity'] = "0"
                         
-                        # Y-AG
+                        # Stock y Descripción (Y-AH) [cite: 20]
                         final['Minimal quantity'] = "1"; final['Low stock level'] = ""; final['Visibility'] = ""
                         final['Additional shipping cost'] = ""; final['Unity'] = ""; final['Unit price'] = ""
                         final['Short description'] = ""
-                        
-                        # AH: Description (E-I)
                         cols_desc = df_k.columns[4:9] 
                         final['Description'] = df_m[cols_desc].fillna('').agg('. '.join, axis=1).apply(lambda x: truncar_texto(x, 2000))
                         
-                        # AI-AR
+                        # Metadatos y Disponibilidad (AI-AR)
                         final['Tags (x,y,z...)'] = ""; final['Meta title'] = ""; final['Meta keywords'] = ""
                         final['Meta description'] = ""; final['URL rewritten'] = ""
                         final['Text when in stock'] = "In Stock"; final['Text when backorder allowed'] = ""
                         final['Available for order (0 = No, 1 = Yes)'] = "1"; final['Product available date'] = ""; final['Product creation date'] = ""
                         
-                        # AS-BH (Final)
+                        # Imágenes y Configuración Final (AS-BH) [cite: 22]
                         final['Show price (0 = No, 1 = Yes)'] = "1"
                         col_ref_i = df_i.columns[0]
                         df_i['urls'] = df_i.iloc[:, 1:].fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
@@ -159,8 +157,9 @@ with tab2:
                         final['Uploadable files (0 = No, 1 = Yes)'] = "0"; final['Text fields (0 = No, 1 = Yes)'] = "0"
                         for col in ['Out of stock', 'ID / Name of shop', 'Advanced stock management', 'Depends On Stock', 'Warehouse']: final[col] = "0"
 
-                        st.session_state.df_final_generado = final.applymap(limpiar_texto)
-                        st.success("✅ Generado.")
+                        # CORRECCIÓN PANDAS 2.x: Sustitución de applymap por map
+                        st.session_state.df_final_generado = final.map(limpiar_texto)
+                        st.success("✅ Generado con éxito.")
                 except Exception as e: st.error(f"Error: {e}")
 
 if st.session_state.df_final_generado is not None:
