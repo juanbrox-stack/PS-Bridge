@@ -27,10 +27,11 @@ def obtener_columna(df, palabras_clave, indice_fallback):
     return df.columns[indice_fallback] if len(df.columns) > indice_fallback else df.columns[0]
 
 # Persistencia de estados
-for key in ['df_revisado', 'df_previa', 'df_final_generado']:
-    if key not in st.session_state: st.session_state[key] = None
+if 'df_previa' not in st.session_state: st.session_state.df_previa = None
+if 'df_revisado' not in st.session_state: st.session_state.df_revisado = None
+if 'df_final_generado' not in st.session_state: st.session_state.df_final_generado = None
 
-st.title("🐦 Turaco PrestaShop Assistant - v4.33")
+st.title("🐦 Turaco PrestaShop Assistant - v4.34")
 tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar", "📦 FASE 2: Generar Excel Maestro"])
 
 # --- FASE 1: IDENTIFICACIÓN ---
@@ -53,7 +54,6 @@ with tab1:
                 col_sku_amz = obtener_columna(df_amz, ['seller-sku', 'sku'], 0)
                 col_asin_amz = obtener_columna(df_amz, ['asin1', 'asin'], 2)
                 col_name_amz = obtener_columna(df_amz, ['item-name', 'title'], 1)
-                
                 col_sku_plan = obtener_columna(df_plan, ['sku'], 0)
                 col_est_plan = obtener_columna(df_plan, ['estado'], 1)
                 col_clu_plan = obtener_columna(df_plan, ['cluster'], 3)
@@ -63,7 +63,6 @@ with tab1:
                 df_amz['sku_norm'] = normalizar_sku(df_amz[col_sku_amz])
                 df_plan['sku_norm'] = normalizar_sku(df_plan[col_sku_plan])
 
-                # FILTRO: Excluir Cluster A, mantener el resto con sus notas
                 estados_ok = ["Lanzamiento Completo", "Carrusel Enriquecidas", "Completo con Texto", "Fotos Rodaje SIN texto", "Solo MAIN"]
                 mask = (df_plan[col_est_plan].isin(estados_ok)) & (df_plan[col_clu_plan].astype(str).str.upper() != "A")
 
@@ -87,7 +86,7 @@ with tab1:
 
 # --- FASE 2: GENERADOR ---
 with tab2:
-    st.header("Generador Final (60 Columnas)")
+    st.header("Generador Final (Corrección de Mapeo)")
     if st.session_state.df_revisado is not None:
         c1, c2, c3 = st.columns(3)
         with c1: f_keepa = st.file_uploader("1. Keepa (XLSX)", type=['xlsx'])
@@ -95,57 +94,63 @@ with tab2:
         with c3: f_cats = st.file_uploader("3. Mapeo Categorías (XLSX)", type=['xlsx'])
 
         if all([f_keepa, f_img, f_cats]):
-            if st.button("🪄 Generar Maestro XLSX"):
+            if st.button("🪄 Generar Maestro"):
                 try:
                     df_k = pd.read_excel(f_keepa, dtype=str)
                     df_i = pd.read_excel(f_img, dtype=str)
                     df_c = pd.read_excel(f_cats, dtype=str)
 
+                    # ASIN Keepa (Índice 0 / Col A)
                     df_k['KEY_JOIN'] = df_k.iloc[:, 0].str.strip().str.upper()
                     df_m = pd.merge(st.session_state.df_revisado, df_k.drop_duplicates(subset=['KEY_JOIN']), 
                                     left_on='ASIN_FINAL', right_on='KEY_JOIN', how='inner')
 
-                    if df_m.empty: st.error("No hay coincidencias con Keepa.")
+                    if df_m.empty: st.error("No coinciden ASINs con Keepa.")
                     else:
                         final = pd.DataFrame()
-                        # Datos principales (A-D) [cite: 20]
+                        # A-B
                         final['Product ID'] = range(900001, 900001 + len(df_m))
                         final['Active (0/1)'] = "1"
+                        
+                        # C: Name (Índice 2 / Col C de Keepa)
                         final['Name *'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[2])].apply(lambda x: truncar_texto(x, 128))
+                        
+                        # D: Categories (Índice 3 / Col D de Keepa) + Mapeo
                         mapeo_cat = pd.Series(df_c.iloc[:,1].values, index=df_c.iloc[:,0].str.lower().str.strip()).to_dict()
                         final['Categories (x,y,z...)'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[3])].apply(lambda x: mapeo_cat.get(str(x).lower().strip(), x))
                         
-                        # Precios y Descuentos (E-L) [cite: 25]
-                        final['Price tax included'] = "999"; final['Tax rules ID'] = "1"; final['Wholesale price'] = ""
-                        final['On sale (0/1)'] = "0"; final['Discount amount'] = ""; final['Discount percent'] = ""
+                        # E-P: Precios, Refs y Proveedor
+                        final['Price tax included'] = "999"; final['Tax rules ID'] = "1"
+                        final['Wholesale price'] = ""; final['On sale (0/1)'] = "0"
+                        final['Discount amount'] = ""; final['Discount percent'] = ""
                         final['Discount from (yyyy-mm-dd)'] = ""; final['Discount to (yyyy-mm-dd)'] = ""
-                        
-                        # Referencias y Proveedor (M-P)
                         final['Reference #'] = df_m['SKU_FINAL']
                         final['Supplier reference #'] = df_m['SKU_FINAL']
                         final['Supplier'] = "Cecotec"; final['Manufacturer'] = "Cecotec"
                         
-                        # EAN y Medidas (Q-X) [cite: 20]
+                        # Q: EAN13 (Índice 9 / Col J de Keepa)
                         final['EAN13'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[9])].apply(limpiar_texto)
+                        
+                        # R-AG: Medidas y Otros
                         final['UPC'] = ""; final['Ecotax'] = ""
                         for col in ['Width', 'Height', 'Depth', 'Weight']: final[col] = "1"
-                        final['Quantity'] = "0"
-                        
-                        # Stock y Descripción (Y-AH) [cite: 20]
-                        final['Minimal quantity'] = "1"; final['Low stock level'] = ""; final['Visibility'] = ""
+                        final['Quantity'] = "0"; final['Minimal quantity'] = "1"
+                        final['Low stock level'] = ""; final['Visibility'] = "both"
                         final['Additional shipping cost'] = ""; final['Unity'] = ""; final['Unit price'] = ""
                         final['Short description'] = ""
+                        
+                        # AH: Description (Índices 4 a 8 / Col E a I de Keepa)
                         cols_desc = df_k.columns[4:9] 
                         final['Description'] = df_m[cols_desc].fillna('').agg('. '.join, axis=1).apply(lambda x: truncar_texto(x, 2000))
                         
-                        # Metadatos y Disponibilidad (AI-AR)
+                        # AI-BH: Metas e Imágenes
                         final['Tags (x,y,z...)'] = ""; final['Meta title'] = ""; final['Meta keywords'] = ""
                         final['Meta description'] = ""; final['URL rewritten'] = ""
                         final['Text when in stock'] = "In Stock"; final['Text when backorder allowed'] = ""
-                        final['Available for order (0 = No, 1 = Yes)'] = "1"; final['Product available date'] = ""; final['Product creation date'] = ""
-                        
-                        # Imágenes y Configuración Final (AS-BH) [cite: 22]
+                        final['Available for order (0 = No, 1 = Yes)'] = "1"
+                        final['Product available date'] = ""; final['Product creation date'] = ""
                         final['Show price (0 = No, 1 = Yes)'] = "1"
+                        
                         col_ref_i = df_i.columns[0]
                         df_i['urls'] = df_i.iloc[:, 1:].fillna('').apply(lambda r: ','.join([str(v).strip() for v in r if str(v).strip() != '']), axis=1)
                         img_dict = pd.Series(df_i['urls'].values, index=normalizar_sku(df_i[col_ref_i])).to_dict()
@@ -157,9 +162,8 @@ with tab2:
                         final['Uploadable files (0 = No, 1 = Yes)'] = "0"; final['Text fields (0 = No, 1 = Yes)'] = "0"
                         for col in ['Out of stock', 'ID / Name of shop', 'Advanced stock management', 'Depends On Stock', 'Warehouse']: final[col] = "0"
 
-                        # CORRECCIÓN PANDAS 2.x: Sustitución de applymap por map
                         st.session_state.df_final_generado = final.map(limpiar_texto)
-                        st.success("✅ Generado con éxito.")
+                        st.success("✅ Generado correctamente.")
                 except Exception as e: st.error(f"Error: {e}")
 
 if st.session_state.df_final_generado is not None:
