@@ -24,10 +24,10 @@ def truncar_texto(texto, limite):
 for key in ['df_revisado', 'df_previa', 'df_final_generado']:
     if key not in st.session_state: st.session_state[key] = None
 
-st.title("🐦 Turaco PrestaShop Assistant - v4.26")
-tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar", "📦 FASE 2: Generar CSV"])
+st.title("🐦 Turaco PrestaShop Assistant - v4.27")
+tab1, tab2 = st.tabs(["🔍 FASE 1: Identificar", "📦 FASE 2: Generar Excel"])
 
-# --- FASE 1: IDENTIFICACIÓN (Con Filtros de Cluster y Notas) ---
+# --- FASE 1: IDENTIFICACIÓN ---
 with tab1:
     st.header("Auditoría de Novedades")
     c1, c2, c3 = st.columns(3)
@@ -47,7 +47,7 @@ with tab1:
                 col_ref_ps = next(c for c in df_ps.columns if 'reference' in c)
                 col_sku_amz = next(c for c in df_amz.columns if 'seller-sku' in c)
                 col_sku_plan = next(c for c in df_plan.columns if 'sku' in c)
-                col_asin_amz = next(c for c in df_amz.columns if 'asin1' in df_amz.columns or 'asin' in df_amz.columns) # Flexible ASIN1
+                col_asin_amz = next(c for c in df_amz.columns if 'asin1' in df_amz.columns or 'asin' in df_amz.columns)
                 
                 col_cluster = next((c for c in df_plan.columns if 'cluster' in c), None)
                 col_notas = next((c for c in df_plan.columns if 'notas' in c), None)
@@ -56,7 +56,7 @@ with tab1:
                 df_amz['sku_norm'] = normalizar_sku(df_amz[col_sku_amz])
                 df_plan['sku_norm'] = normalizar_sku(df_plan[col_sku_plan])
 
-                # FILTROS: Cluster != A y Notas vacías
+                # FILTROS: Estados específicos, Cluster != A y Notas vacías
                 mask_plan = (df_plan['estado'].isin(["Lanzamiento Completo", "Carrusel Enriquecidas", "Completo con Texto", "Fotos Rodaje SIN texto", "Solo MAIN"]))
                 if col_cluster: mask_plan &= (df_plan[col_cluster].astype(str).str.upper() != "A")
                 if col_notas: mask_plan &= (df_plan[col_notas].isna() | (df_plan[col_notas].astype(str).str.strip() == ""))
@@ -65,11 +65,11 @@ with tab1:
                 df_f = pd.merge(df_nov, df_plan[mask_plan][['sku_norm']], on='sku_norm', how='inner')
                 
                 if not df_f.empty:
-                    df_viz = df_f[['sku_norm', df_amz.columns[2], df_amz.columns[3]]].copy() # Usando índices para mayor seguridad
+                    df_viz = df_f[['sku_norm', df_amz.columns[2], df_amz.columns[3]]].copy()
                     df_viz.columns = ['SKU_FINAL', 'TITULO_PROV', 'ASIN_FINAL']
                     df_viz.insert(0, "Seleccionado", True)
                     st.session_state.df_previa = df_viz
-                else: st.warning("No hay novedades tras aplicar filtros.")
+                else: st.warning("Sin novedades tras aplicar filtros.")
             except Exception as e: st.error(f"Fase 1: {e}")
 
     if st.session_state.df_previa is not None:
@@ -78,51 +78,49 @@ with tab1:
             st.session_state.df_revisado = df_editado[df_editado["Seleccionado"] == True].copy()
             st.success("Selección confirmada.")
 
-# --- FASE 2: GENERADOR (Mapeo corregido según Excel real) ---
+# --- FASE 2: GENERADOR ---
 with tab2:
-    st.header("Generador Final")
+    st.header("Generador de Fichero Maestro")
     if st.session_state.df_revisado is not None:
         c1, c2, c3 = st.columns(3)
-        with c1: f_keepa = st.file_uploader("1. Keepa (Excel real)", type=['xlsx'])
+        with c1: f_keepa = st.file_uploader("1. Keepa (XLSX)", type=['xlsx'])
         with c2: f_img = st.file_uploader("2. Imágenes (XLSX)", type=['xlsx'])
         with c3: f_cats = st.file_uploader("3. Mapeo Categorías (XLSX)", type=['xlsx'])
 
         if all([f_keepa, f_img, f_cats]):
-            if st.button("🪄 Generar CSV PrestaShop"):
+            if st.button("🪄 Generar Excel para PrestaShop"):
                 try:
                     df_k = pd.read_excel(f_keepa, dtype=str)
                     df_i = pd.read_excel(f_img, dtype=str)
                     df_c = pd.read_excel(f_cats, dtype=str)
 
-                    # KEY JOIN: Columna A de Keepa (ASIN)
+                    # Join por Columna A de Keepa (ASIN)
                     df_k['KEY_JOIN'] = df_k.iloc[:, 0].str.strip().str.upper()
                     df_m = pd.merge(st.session_state.df_revisado, df_k.drop_duplicates(subset=['KEY_JOIN']), 
                                     left_on='ASIN_FINAL', right_on='KEY_JOIN', how='inner')
 
                     if df_m.empty:
-                        st.error("No hay coincidencia de ASINs. Revisa que el Excel de Keepa sea el correcto.")
+                        st.error("No se encontró correspondencia con Keepa.")
                     else:
                         final = pd.DataFrame()
-                        
-                        # MAPEO SEGÚN EXCEL REAL:
                         final['Product ID'] = range(900001, 900001 + len(df_m))
                         final['Active (0/1)'] = "1"
-                        # Name -> Columna C de Keepa (Título)
+                        # Name -> Columna C de Keepa (Título) [cite: 20]
                         final['Name *'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[2])].apply(lambda x: truncar_texto(x, 128))
                         
-                        # Categories -> Columna D de Keepa (Subcategoría) + Mapeo
+                        # Categories -> Columna D de Keepa + Mapeo [cite: 20]
                         mapeo_cat = pd.Series(df_c.iloc[:,1].values, index=df_c.iloc[:,0].str.lower().str.strip()).to_dict()
                         final['Categories (x,y,z...)'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[3])].apply(lambda x: mapeo_cat.get(str(x).lower().strip(), x))
                         
                         final['Reference #'] = df_m['SKU_FINAL']
-                        # EAN13 -> Columna J de Keepa (Códigos de producto: EAN)
+                        # EAN13 -> Columna J de Keepa [cite: 20]
                         final['EAN13'] = df_m.iloc[:, df_m.columns.get_loc(df_k.columns[9])].apply(limpiar_texto)
                         
-                        # Description -> Concatenación Columnas E a I de Keepa (Descripción & Características)
+                        # Description -> Concatenación E a I de Keepa [cite: 20]
                         cols_desc_keepa = df_k.columns[4:9] 
                         final['Description'] = df_m[cols_desc_keepa].fillna('').agg('. '.join, axis=1).apply(lambda x: truncar_texto(x, 2000))
                         
-                        # Valores fijos solicitados
+                        # Otros campos fijos
                         final['Condition'] = "new"
                         final['On sale (0/1)'] = "0"
                         final['Price tax included'] = "999"
@@ -138,13 +136,22 @@ with tab2:
                         final['Image URLs (x,y,z...)'] = final['Reference #'].apply(lambda x: img_dict.get(x, ""))
 
                         st.session_state.df_final_generado = final.applymap(limpiar_texto)
-                        st.success("✅ CSV generado con el mapeo real del Excel.")
+                        st.success(f"✅ Generado: {len(final)} productos.")
 
-                except Exception as e: st.error(f"Error técnico: {e}")
+                except Exception as e: st.error(f"Error: {e}")
 
 if st.session_state.df_final_generado is not None:
     st.divider()
     st.dataframe(st.session_state.df_final_generado, use_container_width=True)
-    csv_buf = io.StringIO()
-    st.session_state.df_final_generado.to_csv(csv_buf, index=False, sep=',', encoding='utf-8')
-    st.download_button(label="⬇️ Descargar CSV", data=csv_buf.getvalue(), file_name=f"Carga_PS_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
+    
+    # Exportación a XLSX (Excel)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        st.session_state.df_final_generado.to_excel(writer, index=False)
+    
+    st.download_button(
+        label="⬇️ Descargar Excel para PrestaShop",
+        data=output.getvalue(),
+        file_name=f"Carga_PS_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
